@@ -816,7 +816,9 @@ def main(argv=None):
     p = sub.add_parser("mirror", help="セッションをgitコミット可能なMarkdownとしてプロジェクトへミラー")
     p.add_argument("--out", default=".tamo/history", help="出力先ディレクトリ（既定 ./.tamo/history）")
     p.add_argument("--project", help="session_key/タイトル/locatorへの部分一致フィルタ")
-    p.add_argument("--redact", action="store_true", help="APIキー等の秘密情報をマスクしてから書く")
+    # コミット前提の出力なので安全側デフォルト: マスクは既定ON（原文が要る時だけ明示的にOFF）
+    p.add_argument("--redact", action=argparse.BooleanOptionalAction, default=True,
+                   help="APIキー等の秘密情報をマスクして書く（既定ON。--no-redact で原文のまま）")
     p.set_defaults(fn=cmd_mirror)
 
     p = sub.add_parser("rules", help="履歴から導出ルール(決定/制約/エラー対処)を規則ベース抽出しCLAUDE.md等へ還流")

@@ -5,7 +5,8 @@ SpecStoryから学んだ2つの価値を、tamoの設計原則（決定論・出
 1. mirror — セッションをプロジェクト内の .tamo/history/*.md にミラーする。
    SpecStoryの .specstory/history と同じく「gitにコミットでき、PRでAIとの
    検討経緯をレビューでき、grepできる」形。tamoのDBは正、mirrorは常に再生成
-   可能なビュー（手編集しない前提）。--redact で秘密情報を除去してから書く。
+   可能なビュー（手編集しない前提）。コミット前提の出力なので秘密情報マスクは
+   既定ON（`--no-redact` で原文のまま）。
 
 2. rules — 会話履歴から「決定事項・制約・エラーと対処」を規則ベースで抽出し、
    CLAUDE.md 等に還流できる導出ルール文書を作る。SpecStoryのDerived Rules /
