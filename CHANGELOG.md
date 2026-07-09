@@ -38,6 +38,15 @@
 - README を「趣旨と使い方」に再構成し、技術解説を `docs/ARCHITECTURE.md` へ分離
 - 拡張の未使用 `http://localhost/*` 権限を削除（実装は127.0.0.1のみ）
 
+### 国際化・保存期間（同版に追補）
+- README を英語化（正）し `README.ja.md` を併設。15分チュートリアル
+  `docs/TUTORIAL.md` / `TUTORIAL.ja.md` を新設（実データ不要のサンドボックス付き）
+- ブラウザ拡張UIを i18n 化（`_locales` en既定 + ja、52キー）
+- 無期限保存のリスク調査を `docs/ARCHITECTURE.md` §12.1 に文書化
+  （実測: 10万イベント=208MB。真のリスクは秘密情報の平文蓄積・規程との衝突・
+  クラウド同期フォルダ事故）。防波堤として日次ディスク使用量警告
+  `[retention] warn_db_mb`（既定2048MB）を serve/watch/stats に実装
+
 ## [0.1.0] - 初版
 
 - 6ソース（Claude Code / Cursor / Codex CLI / aider / generic_jsonl / inbox）の
