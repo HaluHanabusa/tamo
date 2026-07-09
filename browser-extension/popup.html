@@ -12,30 +12,30 @@
   .row { display: flex; gap: 6px; }
 </style>
 <h1>tamo scoop 🎣</h1>
-<label>tamo ポート（`tamo serve` の inbox、既定 8787）</label>
+<label data-i18n="labelPort">tamo port (`tamo serve` inbox, default 8787)</label>
 <input id="port" type="number" value="8787" />
-<label>トークン（通常は自動設定。手動なら `tamo token` の値）</label>
-<input id="token" type="password" placeholder="再ペアリングで自動取得" />
+<label data-i18n="labelToken">Token (auto-set; manual: value of `tamo token`)</label>
+<input id="token" type="password" data-i18n-placeholder="phToken" placeholder="auto-filled by Re-pair" />
 <div class="row">
-  <button id="save">保存</button>
-  <button id="health">接続確認</button>
-  <button id="pair">再ペアリング</button>
+  <button id="save" data-i18n="btnSave">Save</button>
+  <button id="health" data-i18n="btnHealth">Check connection</button>
+  <button id="pair" data-i18n="btnPair">Re-pair</button>
 </div>
-<button id="scoop">この会話を掬う</button>
-<label>過去文脈の検索（結果をコピー → AIに貼る）</label>
+<button id="scoop" data-i18n="btnScoop">Scoop this conversation</button>
+<label data-i18n="labelRecall">Search past context (result is copied → paste into an AI)</label>
 <div class="row">
   <select id="rsrc" style="flex:0 0 40%">
-    <option value="">全ての面</option>
-    <option value="claude_web">Claude(Web)</option>
+    <option value="" data-i18n="optAllSources">All sources</option>
+    <option value="claude_web">Claude (Web)</option>
     <option value="claude_code">Claude Code</option>
     <option value="chatgpt">ChatGPT</option>
     <option value="gemini">Gemini</option>
     <option value="cursor">Cursor</option>
   </select>
-  <input id="rq" placeholder="例: 甲板カバー 連動" />
+  <input id="rq" data-i18n-placeholder="phQuery" placeholder="e.g. deck cover interlock" />
 </div>
-<button id="recall">検索してコピー</button>
+<button id="recall" data-i18n="btnRecall">Search &amp; copy</button>
 <label style="margin-top:8px"><input type="checkbox" id="fab" checked />
-  対応サイトの右上に🎣ボタンを常時表示</label>
-<div id="status">準備OK</div>
+  <span data-i18n="labelFab">Always show the 🎣 button on supported sites</span></label>
+<div id="status" data-i18n="statusReady">Ready</div>
 <script src="popup.js"></script>

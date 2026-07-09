@@ -1,6 +1,24 @@
 // tamo scoop — popup
 const $ = (id) => document.getElementById(id);
 const say = (t) => { $("status").textContent = t; };
+// i18n: _locales/{en,ja}/messages.json。取れない環境ではHTMLの英語既定文を残す
+const t = (key, subs) => {
+  try {
+    return chrome.i18n.getMessage(key, subs) || key;
+  } catch (_e) {
+    return key;
+  }
+};
+
+// 静的ラベルの差し替え（HTML側は英語のフォールバック文）
+for (const el of document.querySelectorAll("[data-i18n]")) {
+  const m = t(el.dataset.i18n);
+  if (m && m !== el.dataset.i18n) el.textContent = m;
+}
+for (const el of document.querySelectorAll("[data-i18n-placeholder]")) {
+  const m = t(el.dataset.i18nPlaceholder);
+  if (m && m !== el.dataset.i18nPlaceholder) el.placeholder = m;
+}
 
 async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -34,52 +52,50 @@ async function scoopViaInjection(tabId) {
 
 $("save").onclick = async () => {
   await chrome.storage.sync.set({ port: Number($("port").value) || 8787, token: $("token").value.trim() });
-  say("保存しました。「接続確認」で疎通とトークンを確かめられます");
+  say(t("saved"));
 };
 
 $("pair").onclick = async () => {
   // トークン不一致(403)からの復帰導線。/pair はlocalhost限定・サーバの現行トークンを返す
-  say("ペアリング中…");
+  say(t("pairing"));
   const r = await chrome.runtime.sendMessage({ type: "tamo.pair" });
   if (r && r.ok) {
     const s = await chrome.storage.sync.get({ token: "" });
     $("token").value = s.token;
-    say("再ペアリング完了 ✓（トークンを更新しました）");
+    say(t("pairDone"));
   } else {
-    say("ペアリング失敗: tamo serve が起動しているか、ポート番号が合っているか確認してください");
+    say(t("pairFail"));
   }
 };
 
 $("health").onclick = async () => {
-  say("接続確認中…");
+  say(t("healthChecking"));
   const r = await chrome.runtime.sendMessage({ type: "tamo.health" });
   if (r.ok) {
-    say($("token").value.trim()
-      ? "tamoに接続OK ✓（トークンも一致）"
-      : "tamoに接続OK ✓（トークン未設定 — 初回投函時に自動ペアリングします）");
+    say($("token").value.trim() ? t("healthOkToken") : t("healthOkNoToken"));
     return;
   }
-  if (r.tokenBad) return say("サーバには届きましたがトークンが不一致です\n→「再ペアリング」を押すと解消します");
-  say(`接続NG: ${r.error || r.status}\n（tamo serve を起動してください。ポート設定も確認: 既定8787）`);
+  if (r.tokenBad) return say(t("healthTokenBad"));
+  say(t("healthNg", [String(r.error || r.status)]));
 };
 
 $("recall").onclick = async () => {
   const q = $("rq").value.trim();
-  if (!q) return say("検索語を入れてください");
-  say("tamoから過去文脈を取得中…");
+  if (!q) return say(t("recallNeedQuery"));
+  say(t("recallFetching"));
   const r = await chrome.runtime.sendMessage({ type: "tamo.recall", query: q, source: $("rsrc").value });
-  if (!r.ok) return say(`取得失敗: ${r.error}`);
+  if (!r.ok) return say(t("recallFail", [String(r.error)]));
   if (r.text.includes("(該当なし")) {  // 空振りを「コピー成功」と偽らない
-    return say(`該当なし: ${q}\n別の語で試すか、対象の会話を先に「掬う」で取り込んでください`);
+    return say(t("recallEmpty", [q]));
   }
   await navigator.clipboard.writeText(r.text);
-  say(`コピーしました ✓ (${r.text.length}字)\nそのままChatGPT/Gemini/Claudeの入力欄に貼れます`);
+  say(t("recallCopied", [String(r.text.length)]));
 };
 
 $("rq").onkeydown = (e) => { if (e.key === "Enter") $("recall").click(); };
 
 $("scoop").onclick = async () => {
-  say("掬っています…（長い会話は過去分の読み込みに十数秒かかることがあります）");
+  say(t("scooping"));
   let res;
   try {
     const tab = await activeTab();
@@ -91,29 +107,26 @@ $("scoop").onclick = async () => {
   } catch (e) {
     // chrome:// やウェブストア等、拡張が触れないページでは executeScript が拒否される。
     // ここを未処理にすると「掬っています…」のまま永久フリーズする
-    return say(`このページでは掬えません（${e.message}）\nchrome:// 等の保護ページやPDFビューアは対象外です`);
+    return say(t("scoopRestricted", [e.message]));
   }
-  if (!res || !res.ok) return say(`抽出失敗: ${(res && res.error) || "不明なエラー"}`);
+  if (!res || !res.ok) return say(t("scoopFail", [(res && res.error) || t("unknownError")]));
   const p = res.payload;
   const nAtt = p.messages.reduce((n, m) => n + (m.attachments || []).length, 0);
-  say(`抽出OK (${res.adapter}${res.warn ? " ⚠" + res.warn : ""})\n` +
-      `messages=${p.messages.length} attachments=${nAtt}\n投函中…`);
+  say(`${t("extractOk", [res.adapter])}${res.warn ? " ⚠" + res.warn : ""}\n` +
+      `messages=${p.messages.length} attachments=${nAtt}\n${t("posting")}`);
   const post = await chrome.runtime.sendMessage({ type: "tamo.post", payload: p });
   if (post.ok) {
-    say(`投函完了 ✓ (${p.session})\nmessages=${p.messages.length} attachments=${nAtt}` +
-        (p.note ? `\n⚠ ${p.note}` : "") +
-        "\ntamo serve が次のポーリングで自動取込します");
+    say(`${t("postDone", [p.session])}\nmessages=${p.messages.length} attachments=${nAtt}` +
+        (p.note ? `\n⚠ ${p.note}` : "") + `\n${t("postIngestNote")}`);
   } else {
-    say(`投函失敗: ${post.error || "HTTP " + post.status}` +
-        (post.status === 403 ? "\n→「再ペアリング」を押すと解消します" : ""));
+    say(t("postFail", [String(post.error || "HTTP " + post.status)]) +
+        (post.status === 403 ? `\n${t("hint403")}` : ""));
   }
 };
 
 $("fab").onchange = async () => {
   await chrome.storage.sync.set({ fab: $("fab").checked });
-  say($("fab").checked
-    ? "対応サイトに🎣ボタンを常時表示します（タブ再読込後に反映）"
-    : "🎣ボタンを非表示にします（開いているタブは再読込後に反映）");
+  say($("fab").checked ? t("fabOn") : t("fabOff"));
 };
 
 chrome.storage.sync.get({ port: 8787, token: "", fab: true }).then(async (d) => {
@@ -125,9 +138,9 @@ chrome.storage.sync.get({ port: 8787, token: "", fab: true }).then(async (d) => 
     if (r && r.ok) {
       const s = await chrome.storage.sync.get({ token: "" });
       $("token").value = s.token;
-      say("tamoと自動ペアリングしました ✓（トークン設定済み）");
+      say(t("autoPaired"));
     } else {
-      say("自動ペアリング失敗: tamo serve を起動してから「再ペアリング」を押すか、`tamo token` の値を貼って保存してください");
+      say(t("autoPairFail"));
     }
   }
 });

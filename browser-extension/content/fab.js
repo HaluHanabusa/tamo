@@ -2,6 +2,15 @@
 // 対応サイトの画面右上に🎣ボタンを固定表示し、ワンクリックで「掬う→投函→結果トースト」。
 // popupを開く手間をなくす。設定(popupのチェックボックス)でOFFにできる。
 (() => {
+  // i18n（孤児化してchrome.i18nが失われた場合は英語のフォールバック文を使う）
+  const t = (key, subs, fallback) => {
+    try {
+      return chrome.i18n.getMessage(key, subs) || fallback || key;
+    } catch (_e) {
+      return fallback || key;
+    }
+  };
+
   async function enabled() {
     if (!window.__tamo || !window.__tamo.alive()) return false;
     try {
@@ -29,34 +38,36 @@
   async function scoopAndPost(host, btn) {
     if (!window.__tamo.alive()) {
       // 拡張更新でこのタブのスクリプトが孤児化している
-      return toast(host, "拡張が更新されました — このタブを再読み込み(F5)すると直ります", false);
+      return toast(host, t("fabOrphaned", null,
+        "The extension was updated — reload this tab (F5) to fix it"), false);
     }
     btn.disabled = true;
     btn.textContent = "…";
     // 自動スクロール中は n/25 の進捗を出す（長い会話で十数秒黙るとフリーズに見える）
     window.__tamo.onScrollStep = (i, max) => {
       btn.textContent = String(i);
-      btn.title = `過去分を読み込み中 ${i}/${max}`;
+      btn.title = t("fabLoading", [String(i), String(max)], `Loading history ${i}/${max}`);
     };
     try {
       const res = await window.__tamoRun();
-      if (!res.ok) return toast(host, `抽出失敗: ${res.error}`, false);
+      if (!res.ok) return toast(host, t("scoopFail", [String(res.error)], `Extraction failed: ${res.error}`), false);
       const p = res.payload;
       const nAtt = p.messages.reduce((n, m) => n + (m.attachments || []).length, 0);
       const post = await chrome.runtime.sendMessage({ type: "tamo.post", payload: p });
       if (post.ok) {
-        const trunc = p.note && p.note.includes("[上限切詰め]") ? " ⚠一部切詰め" : "";
-        toast(host, `tamoに投函 ✓ ${res.adapter}${res.warn ? "(fallback)" : ""} msg=${p.messages.length} att=${nAtt}${trunc}`, true);
+        const trunc = p.note && p.note.includes("[上限切詰め]") ? ` ${t("fabTruncated", null, "⚠ partially truncated")}` : "";
+        toast(host, `${t("fabDelivered", null, "Delivered to tamo ✓")} ${res.adapter}${res.warn ? "(fallback)" : ""} msg=${p.messages.length} att=${nAtt}${trunc}`, true);
       } else {
-        toast(host, `投函失敗: ${post.error || "HTTP " + post.status}`, false);
+        const detail = post.error || "HTTP " + post.status;
+        toast(host, t("postFail", [String(detail)], `Delivery failed: ${detail}`), false);
       }
     } catch (e) {
-      toast(host, `エラー: ${e.message}`, false);
+      toast(host, t("fabError", [e.message], `Error: ${e.message}`), false);
     } finally {
       window.__tamo.onScrollStep = null;
       btn.disabled = false;
       btn.textContent = "🎣";
-      btn.title = "この会話をtamoに掬う";
+      btn.title = t("fabTitle", null, "Scoop this conversation into tamo");
     }
   }
 
@@ -78,9 +89,10 @@
         .tamo-toast { max-width: 300px; padding: 6px 10px; border-radius: 6px; color: #fff;
                       opacity: 0; transition: opacity .3s; word-break: break-all; }
       </style>
-      <div class="wrap"><button title="この会話をtamoに掬う">🎣</button></div>`;
+      <div class="wrap"><button>🎣</button></div>`;
     const wrap = shadow.querySelector(".wrap");
     const btn = shadow.querySelector("button");
+    btn.title = t("fabTitle", null, "Scoop this conversation into tamo");
     btn.onclick = () => scoopAndPost(wrap, btn);
     document.documentElement.appendChild(root);
   }

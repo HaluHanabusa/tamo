@@ -8,6 +8,14 @@ async function settings() {
   return d;
 }
 
+const t = (key, subs) => {
+  try {
+    return chrome.i18n.getMessage(key, subs) || key;
+  } catch (_e) {
+    return key;
+  }
+};
+
 // サーバのエラー本文（"bad token: 再ペアリングで解消…" 等の対処ガイド）を捨てずに届ける
 async function errorDetail(res) {
   let body = "";
@@ -32,7 +40,7 @@ async function postInbox(payload) {
   const { port } = await settings();
   let { token } = await settings();
   if (!token) token = await pair();  // 未設定なら自動ペアリング（GET /pair, localhost限定）
-  if (!token) return { ok: false, error: "tamoとペアリングできません（tamo serve は起動していますか）" };
+  if (!token) return { ok: false, error: t("bgPairFail") };
   try {
     const res = await fetch(`http://127.0.0.1:${port}/inbox`, {
       method: "POST",
@@ -42,7 +50,7 @@ async function postInbox(payload) {
     if (res.status === 204) return { ok: true, status: 204 };
     return { ok: false, status: res.status, error: await errorDetail(res) };
   } catch (e) {
-    return { ok: false, error: `tamoに接続できません: ${e.message}（tamo serve は起動していますか）` };
+    return { ok: false, error: t("bgConnectFail", [e.message]) };
   }
 }
 
@@ -78,7 +86,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const { port } = await settings();
       let { token } = await settings();
       if (!token) token = await pair();
-      if (!token) return sendResponse({ ok: false, error: "ペアリング未完了（tamo serve 起動中に「再ペアリング」を押してください）" });
+      if (!token) return sendResponse({ ok: false, error: t("bgNotPaired") });
       try {
         const src = msg.source ? `&source=${encodeURIComponent(msg.source)}` : "";
         const res = await fetch(`http://127.0.0.1:${port}/recall?q=${encodeURIComponent(msg.query)}${src}`,
