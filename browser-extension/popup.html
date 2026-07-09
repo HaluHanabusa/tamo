@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  body { font: 13px/1.5 system-ui, sans-serif; width: 300px; margin: 10px; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  label { display: block; margin: 6px 0 2px; color: #555; }
+  input { width: 100%; box-sizing: border-box; padding: 4px 6px; }
+  button { margin-top: 8px; padding: 6px 10px; cursor: pointer; }
+  #scoop { font-weight: 600; }
+  #status { white-space: pre-wrap; background: #f5f5f5; padding: 6px; margin-top: 8px;
+            border-radius: 4px; min-height: 2em; max-height: 160px; overflow: auto; }
+  .row { display: flex; gap: 6px; }
+</style>
+<h1>tamo scoop 🎣</h1>
+<label>tamo ポート（tamo watch --http）</label>
+<input id="port" type="number" value="8787" />
+<label>トークン（~/.tamo/inbox.token の中身）</label>
+<input id="token" type="password" placeholder="貼り付けて保存" />
+<div class="row">
+  <button id="save">保存</button>
+  <button id="health">接続確認</button>
+</div>
+<button id="scoop">この会話を掬う</button>
+<label>過去文脈の検索（結果をコピー → AIに貼る）</label>
+<div class="row">
+  <select id="rsrc" style="flex:0 0 40%">
+    <option value="">全ての面</option>
+    <option value="claude_web">Claude(Web)</option>
+    <option value="claude_code">Claude Code</option>
+    <option value="chatgpt">ChatGPT</option>
+    <option value="gemini">Gemini</option>
+    <option value="cursor">Cursor</option>
+  </select>
+  <input id="rq" placeholder="例: 甲板カバー 連動" />
+</div>
+<button id="recall">検索してコピー</button>
+<label style="margin-top:8px"><input type="checkbox" id="fab" checked />
+  対応サイトの右上に🎣ボタンを常時表示</label>
+<div id="status">準備OK</div>
+<script src="popup.js"></script>

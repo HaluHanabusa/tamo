@@ -1,0 +1,2 @@
+[console_scripts]
+tamo = tamo.cli:main
