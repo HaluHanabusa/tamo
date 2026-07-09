@@ -2,7 +2,8 @@
 
 「どのエージェントにも対応」を仕様書ではなく実機で担保するための道具。
 各エージェントの保存形式は非公開かつ頻繁に変わるため、tamoは
-  1) 既知の候補ロケーションを走査（WSL2なら /mnt/c のWindows側も見る）
+  1) 既知の候補ロケーションを走査（WSL2なら /mnt/c のWindows側、
+     ネイティブWindowsなら自分の %APPDATA% 配下も見る）
   2) SQLiteはスナップショットして中のテーブル/キー分布まで検分
   3) 対応アダプタがあるものは sources.toml を自動生成、無いものは
      「検出済み・要generic_jsonl設定 or アダプタ追加」として報告
@@ -59,9 +60,17 @@ def run_probe(home: Path, extra_scan: list[Path] | None = None) -> dict:
     wins = _win_users()
     if wins:
         notes.append(f"WSL2/Windows境界を検出: Windowsユーザー {', '.join(p.name for p in wins)} 側も走査します")
+    # ネイティブWindowsでは自分のホームが %USERPROFILE% そのもの。
+    # AppData系(Cursor/Windsurf/Cline/Copilot/VS)の走査対象に自分自身を足す
+    # （従来はWSL経由 /mnt/c しか見ておらず、ネイティブWinのCursorユーザーを黙って見逃していた）
+    win_self = [home] if os.name == "nt" and (home / "AppData").exists() else []
+    if win_self:
+        notes.append("ネイティブWindowsを検出: %APPDATA% 配下(Cursor/Windsurf/Cline等)も走査します")
+    win_all = wins + win_self
+    home_label = "home" if os.name == "nt" else "wsl"  # 既存WSLユーザーのkey互換のためwslは維持
 
-    # --- Claude Code (WSL/Linux側 + Windows側 + CLAUDE_CONFIG_DIR) ---
-    cc_roots = [(home / ".claude" / "projects", "wsl")] + [
+    # --- Claude Code (ホーム + Windows側 + CLAUDE_CONFIG_DIR) ---
+    cc_roots = [(home / ".claude" / "projects", home_label)] + [
         (u / ".claude" / "projects", f"win:{u.name}") for u in wins
     ]
     ccd = os.environ.get("CLAUDE_CONFIG_DIR")
@@ -87,14 +96,14 @@ def run_probe(home: Path, extra_scan: list[Path] | None = None) -> dict:
         if base.exists() and any(base.glob(pat)):
             notes.append(f"{label} を検出: セッションは上記 .claude/projects のtranscriptに書かれるので追加設定は不要です")
             break
-    for u in wins:  # Visual Studio(.NET IDE)向けサードパーティ拡張の痕跡
+    for u in win_all:  # Visual Studio(.NET IDE)向けサードパーティ拡張の痕跡
         vsx = u / "AppData" / "Local" / "Microsoft" / "VisualStudio"
         if vsx.exists() and any(vsx.rglob("ClaudeCodeExtension*")):
             notes.append(f"Visual Studio拡張(win:{u.name}) を検出: これも .claude/projects / CLAUDE_CONFIG_DIR のtranscriptを読み書きします")
             break
 
     # --- Codex CLI ---
-    for root, label in [(home / ".codex" / "sessions", "wsl")] + [
+    for root, label in [(home / ".codex" / "sessions", home_label)] + [
         (u / ".codex" / "sessions", f"win:{u.name}") for u in wins
     ]:
         if root.exists():
@@ -106,7 +115,7 @@ def run_probe(home: Path, extra_scan: list[Path] | None = None) -> dict:
         ("cursor_ide", home / ".config" / "Cursor" / "User" / "globalStorage" / "state.vscdb", "linux"),
         ("windsurf", home / ".config" / "Windsurf" / "User" / "globalStorage" / "state.vscdb", "linux"),
     ]
-    for u in wins:
+    for u in win_all:
         roam = u / "AppData" / "Roaming"
         vs_candidates.append(("cursor_ide", roam / "Cursor" / "User" / "globalStorage" / "state.vscdb", f"win:{u.name}"))
         vs_candidates.append(("windsurf", roam / "Windsurf" / "User" / "globalStorage" / "state.vscdb", f"win:{u.name}"))
@@ -136,7 +145,7 @@ def run_probe(home: Path, extra_scan: list[Path] | None = None) -> dict:
         ("opencode", home / ".local" / "share" / "opencode", "形式をprobeで確認のうえgeneric_jsonl設定"),
         ("cline", home / ".config" / "Code" / "User" / "globalStorage" / "saoudrizwan.claude-dev", "tasks/*/api_conversation_history.json"),
     ]
-    for u in wins:
+    for u in win_all:
         only.append(("cline", u / "AppData" / "Roaming" / "Code" / "User" / "globalStorage" / "saoudrizwan.claude-dev",
                      "tasks/*/api_conversation_history.json"))
         only.append(("vscode_copilot", u / "AppData" / "Roaming" / "Code" / "User" / "workspaceStorage",
