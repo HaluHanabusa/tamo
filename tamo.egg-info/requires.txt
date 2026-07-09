@@ -1,9 +1,0 @@
-
-[mcp]
-mcp[cli]>=1.2
-
-[media]
-pillow
-
-[pdf]
-pypdf>=4
