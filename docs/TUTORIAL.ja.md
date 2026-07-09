@@ -131,7 +131,7 @@ tamo purge --yes                 # 全データ削除（設定とトークンは
 ```
 
 既定の保持は**無期限**です — tamoはソース側の自動削除より長く残すために
-あります。何日が適切かは [ARCHITECTURE.md](ARCHITECTURE.md) の保存期間リスクの
+あります。何日が適切かは [ARCHITECTURE.ja.md](ARCHITECTURE.ja.md) の保存期間リスクの
 節を読んでから決めてください。仕事マシンでは `~/.tamo/settings.toml` に
 `[retention] days = 90`（または社内規程の日数）を推奨します。
 

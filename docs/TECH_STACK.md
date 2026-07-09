@@ -1,364 +1,427 @@
-# tamo 技術スタック解説書
+# tamo tech stack
 
-> tamoで使っている技術と「なぜそれを選んだか」を、後から確認しやすいように
-> レイヤーごとにまとめたもの。**該当ファイル名を常に併記**しているので、
-> 挙動を確かめたくなったらそのファイルを開けば実装に辿り着けます。
+English | [日本語](TECH_STACK.ja.md)
+
+> The technologies tamo uses and *why each one was chosen*, organized by layer so
+> it is easy to check later. **The relevant file name is always given**, so when
+> you want to verify a behavior, open that file and you land on the implementation.
 >
-> **読み分け**: 使い方は [README](../README.md)、設計思想・データモデル・NFRは
-> [ARCHITECTURE.md](ARCHITECTURE.md)、実機確認手順は [VERIFICATION.md](VERIFICATION.md)。
+> **Which doc to read**: for usage, see the [README](../README.md); for design
+> philosophy, data model and NFRs, [ARCHITECTURE.md](ARCHITECTURE.md); for
+> on-machine verification steps, [VERIFICATION.md](VERIFICATION.md).
 
-## 目次
+## Table of contents
 
-1. [全体アーキテクチャと設計原則](#1-全体アーキテクチャと設計原則)
-2. [ランタイムと依存方針](#2-ランタイムと依存方針)
-3. [データ層 — SQLite / WAL / FTS5](#3-データ層--sqlite--wal--fts5)
-4. [CES v1 — 正準イベントと決定論的ID](#4-ces-v1--正準イベントと決定論的id)
-5. [CAS — コンテンツアドレス格納とマジックナンバー判定](#5-cas--コンテンツアドレス格納とマジックナンバー判定)
-6. [textract — 決定論テキスト抽出](#6-textract--決定論テキスト抽出)
-7. [アダプタ層とカーソル戦略](#7-アダプタ層とカーソル戦略)
-8. [probe — 実機フィンガープリンタ](#8-probe--実機フィンガープリンタ)
-9. [optimize — 読出時最適化 P1〜P4](#9-optimize--読出時最適化-p1p4)
-10. [配布層 — CLI / HTTP inbox / MCP / export](#10-配布層--cli--http-inbox--mcp--export)
-11. [ブラウザ拡張 (MV3)](#11-ブラウザ拡張-mv3)
-12. [WSL2 / Windows 統合](#12-wsl2--windows-統合)
-13. [テスト戦略と実測値](#13-テスト戦略と実測値)
-14. [壊れたらどこを直すか（早見表）](#14-壊れたらどこを直すか早見表)
-15. [用語集](#15-用語集)
+1. [Overall architecture and design principles](#1-overall-architecture-and-design-principles)
+2. [Runtime and dependency policy](#2-runtime-and-dependency-policy)
+3. [Data layer — SQLite / WAL / FTS5](#3-data-layer--sqlite--wal--fts5)
+4. [CES v1 — canonical events and deterministic IDs](#4-ces-v1--canonical-events-and-deterministic-ids)
+5. [CAS — content-addressed storage and magic-number sniffing](#5-cas--content-addressed-storage-and-magic-number-sniffing)
+6. [textract — deterministic text extraction](#6-textract--deterministic-text-extraction)
+7. [Adapter layer and cursor strategy](#7-adapter-layer-and-cursor-strategy)
+8. [probe — real-machine fingerprinting](#8-probe--real-machine-fingerprinting)
+9. [optimize — read-time optimization P1–P4](#9-optimize--read-time-optimization-p1p4)
+10. [Serving layer — CLI / HTTP inbox / MCP / export](#10-serving-layer--cli--http-inbox--mcp--export)
+11. [Browser extension (MV3)](#11-browser-extension-mv3)
+12. [WSL2 / Windows integration](#12-wsl2--windows-integration)
+13. [Test strategy and measured results](#13-test-strategy-and-measured-results)
+14. [Where to fix it when it breaks (quick reference)](#14-where-to-fix-it-when-it-breaks-quick-reference)
+15. [Glossary](#15-glossary)
 
 ---
 
-## 1. 全体アーキテクチャと設計原則
+## 1. Overall architecture and design principles
 
 ```
-[ソース]                          [tamo コア]                        [消費側]
-Claude Code transcript(JSONL) ─┐  probe.py    実機走査・自動設定
-Cursor state.vscdb ────────────┤  adapters/   増分・冪等・寛容パース   ┌ mcp_server.py (8ツール)
-Codex CLI rollout(JSONL) ──────┼→ schema.py   CES v1 正規化        ──┼ cli.py pack (Markdown)
-aider history.md ──────────────┤  cas.py      blob吸出し+参照置換     └ cli.py export (NDJSON)
-ブラウザ拡張 → http_inbox.py ──┘  textract.py 添付テキスト抽出
-                                  store.py    SQLite+FTS5 永続化
-                                  optimize.py 読出時 P1〜P4
+[sources]                         [tamo core]                          [consumers]
+Claude Code transcript(JSONL) ─┐  probe.py    machine scan, auto-config
+Cursor state.vscdb ────────────┤  adapters/   incremental, idempotent,    ┌ mcp_server.py (8 tools)
+Codex CLI rollout(JSONL) ──────┼→   tolerant parsing                   ──┼ cli.py pack (Markdown)
+aider history.md ──────────────┤  schema.py   CES v1 normalization        └ cli.py export (NDJSON)
+browser ext → http_inbox.py ───┘  cas.py      blob extraction + reference replacement
+                                  textract.py attachment text extraction
+                                  store.py    SQLite+FTS5 persistence
+                                  optimize.py read-time P1–P4
 ```
 
-4つの設計原則（[ARCHITECTURE.md](ARCHITECTURE.md) と同じ。実装上の帰結を添える）:
+The four design principles (same as [ARCHITECTURE.md](ARCHITECTURE.md), here with
+their implementation consequences):
 
-| 原則 | 実装上の帰結 |
+| Principle | Implementation consequence |
 |---|---|
-| 取込は無損失、最適化は読出時 | 原文は `raw_records`/`quarantine` に必ず残る。pack/検索はいつでも再構築できる「ビュー」 |
-| 収集・保存にLLMを使わない | event_id・要点抽出・文選抜まで全て決定論（同入力→同出力）。意味的蒸留は下流(OmniBrain HITL)の仕事 |
-| ドリフト前提 | 壊れた行→quarantine、未知スキーマ→raw温存+metaイベント。「常にパースできる」ではなく「落ちない・失わない」を保証 |
-| 添付はメタデータ優先 | 中身が読めなくても種別・名前・サイズを本文に必ず残す。テキスト抽出はボーナス |
+| Lossless ingestion, read-time optimization | Raw text always survives in `raw_records`/`quarantine`. pack/search are "views" that can be rebuilt at any time |
+| No LLM in collection or storage | event_id, key-point extraction, sentence selection — all deterministic (same input → same output). Semantic distillation belongs downstream (OmniBrain HITL) |
+| Drift is assumed | Broken lines → quarantine; unknown schemas → raw kept + meta event. The guarantee is "never crash, never lose", not "always parse" |
+| Attachments: metadata first | Even when contents are unreadable, kind/name/size always land in the body text. Text extraction is a bonus |
 
-## 2. ランタイムと依存方針
+## 2. Runtime and dependency policy
 
-| 項目 | 選定 | 理由 |
+| Item | Choice | Why |
 |---|---|---|
-| 言語 | Python **3.11+** (`pyproject.toml` の requires-python) | `X | None` 型構文・高速化されたCPython。WSL2のUbuntuに素で入る |
-| コア依存 | **ゼロ**（標準ライブラリのみ） | 社内PC・オフライン環境で `pip install -e .` 一発。供給網リスクと監査コストの最小化 |
-| 任意extras | `mcp`=FastMCP配布 / `pdf`=pypdf / `media`=Pillow | 「無くても収集は完全に動く」層にだけ外部依存を許す |
-| パッケージング | PEP 621 (`pyproject.toml`) + setuptools | `[project.scripts] tamo = "tamo.cli:main"` でCLI登録 |
+| Language | Python **3.11+** (requires-python in `pyproject.toml`) | `X \| None` type syntax, the faster CPython. Ships out of the box on WSL2's Ubuntu |
+| Core dependencies | **Zero** (stdlib only) | One-shot `pip install -e .` on corporate PCs and offline machines. Minimizes supply-chain risk and audit cost |
+| Optional extras | `mcp`=FastMCP serving / `pdf`=pypdf / `media`=Pillow | External dependencies are allowed only in the layer where "collection still works perfectly without them" |
+| Packaging | PEP 621 (`pyproject.toml`) + setuptools | CLI registered via `[project.scripts] tamo = "tamo.cli:main"` |
 
-使っている標準ライブラリと役割（≒このプロジェクトの本当のスタック）:
+The standard-library modules in use and their roles (≒ this project's real stack):
 
-`sqlite3`(永続層/FTS5), `zipfile`+`zlib`(OOXML/PDF展開), `hashlib`(sha256=CAS/event_id),
-`base64`, `re`(抽出器・要点規則), `html`(XMLエンティティ), `mimetypes`, `difflib`(P2のunified diff),
-`http.server`(inbox), `argparse`(CLI), `pathlib`, `json`, `tempfile`+`shutil`(SQLiteスナップショット), `secrets`(トークン生成)
+`sqlite3` (persistence/FTS5), `zipfile`+`zlib` (OOXML/PDF unpacking), `hashlib` (sha256 = CAS/event_id),
+`base64`, `re` (extractors, key-point rules), `html` (XML entities), `mimetypes`, `difflib` (P2 unified diff),
+`http.server` (inbox), `argparse` (CLI), `pathlib`, `json`, `tempfile`+`shutil` (SQLite snapshots), `secrets` (token generation)
 
-## 3. データ層 — SQLite / WAL / FTS5
+## 3. Data layer — SQLite / WAL / FTS5
 
-**ファイル**: `tamo/store.py`（スキーマ定義は先頭の `_SCHEMA`）
+**File**: `tamo/store.py` (the schema is `_SCHEMA` at the top)
 
-単一ファイル `~/.tamo/tamo.db`、`PRAGMA journal_mode=WAL`。
-選定理由: サーバ不要・1ファイルでバックアップ完結・WALで「watch常駐が書きながらMCPが読む」が成立。
+A single file `~/.tamo/tamo.db`, `PRAGMA journal_mode=WAL`.
+Why: no server, backup is one file, and WAL makes "the resident watcher writes
+while MCP reads" work.
 
-テーブル8+仮想1:
+8 tables + 1 virtual:
 
-| テーブル | 役割 |
+| Table | Role |
 |---|---|
-| `raw_records` | 原文そのまま (locator UNIQUE で冪等)。ADR-024と同思想 |
-| `events` | CES正規化イベント。`event_id` PK が冪等の要 |
-| `sessions` | セッション集約（タイトル・件数・期間） |
-| `blobs` / `blob_refs` | CASメタと イベント⇔blob の参照 |
-| `blob_texts` | 添付から抽出したテキスト（sha256キャッシュ） |
-| `cursors` | ソースごとの増分位置 |
-| `quarantine` | パース不能行の隔離（原文+エラー付き） |
-| `events_fts` (FTS5仮想) | 全文検索インデックス |
+| `raw_records` | Raw text verbatim (idempotent via UNIQUE locator). Same idea as ADR-024 |
+| `events` | CES-normalized events. The `event_id` PK is the linchpin of idempotency |
+| `sessions` | Session aggregates (title, counts, time range) |
+| `blobs` / `blob_refs` | CAS metadata and event⇔blob references |
+| `blob_texts` | Text extracted from attachments (sha256-keyed cache) |
+| `cursors` | Per-source incremental positions |
+| `quarantine` | Unparseable lines (raw text + error) |
+| `events_fts` (FTS5 virtual) | Full-text search index |
 
-**FTS5 trigram を選んだ理由**: 日本語は分かち書きが無いので既定の `unicode61` では
-単語検索がほぼ効かない。`tokenize='trigram'`（SQLite 3.34+）は3文字窓の部分一致なので
-「甲板カバー」「スナップショット」のような**日本語の部分文字列検索が形態素解析なしで**成立する。
-古いSQLiteでは通常FTS5 → それも無ければ `LIKE` に自動フォールバック（`_init_fts`/`search`）。
+**Why FTS5 trigram**: Japanese has no word boundaries, so the default `unicode61`
+tokenizer makes word search nearly useless. `tokenize='trigram'` (SQLite 3.34+)
+matches on 3-character windows, so **CJK substring search like 「甲板カバー」
+("deck cover") or 「スナップショット」("snapshot") works with no morphological
+analyzer**. On older SQLite it falls back to regular FTS5, and failing that to
+`LIKE` (`_init_fts`/`search`).
 
-**FTSに何を載せるか**（`upsert_event`）: `events.text` はイベント本文だけを保ち軽量に、
-FTS行には本文+「[添付 name]+抽出テキスト先頭4000字」を連結して載せる。
-→ 検索は添付の中身までヒットするが、pack等が読む本文は肥大しない。
+**What goes into FTS** (`upsert_event`): `events.text` holds only the event body
+and stays lean; the FTS row gets the body plus "[添付 name] + first 4,000 chars of
+extracted text" concatenated. → Search hits the contents of attachments, but the
+body that pack and friends read never bloats.
 
-**snapshot_sqlite**（`tamo/adapters/__init__.py`）: 稼働中のCursor等のDBは
-`shutil.copy2` で本体+`-wal`+`-shm` をテンポラリへコピー →
-コピー側で `PRAGMA wal_checkpoint(TRUNCATE)` してから読む。
-直接openしない理由: アプリが掴んでいるDBのロック競合と、WSL2の `/mnt/c`（9pファイルシステム）
-越しのロック不全を両方回避するため。**ソースには一切書き込まない**。
+**snapshot_sqlite** (`tamo/adapters/__init__.py`): live databases (Cursor etc.)
+are copied — main file + `-wal` + `-shm` — to a temp dir with `shutil.copy2`, then
+`PRAGMA wal_checkpoint(TRUNCATE)` is run on the *copy* before reading. Why not
+open directly: to avoid both lock contention with the app that holds the DB and
+broken locking across WSL2's `/mnt/c` (9p filesystem). **tamo never writes to the
+sources.**
 
-## 4. CES v1 — 正準イベントと決定論的ID
+## 4. CES v1 — canonical events and deterministic IDs
 
-**ファイル**: `tamo/schema.py`
+**File**: `tamo/schema.py`
 
-全ソースの発話を1つの形に正規化する Canonical Event Schema:
-`actor ∈ {user, assistant, tool, system}` × `kind ∈ {message, tool_use, tool_result, meta}`、
-`content` はブロック配列（`text` / `tool_use` / `tool_result` / `blob` / 中間表現 `image_b64`・`file_b64`）。
+The Canonical Event Schema normalizes utterances from every source into one shape:
+`actor ∈ {user, assistant, tool, system}` × `kind ∈ {message, tool_use, tool_result, meta}`,
+with `content` as an array of blocks (`text` / `tool_use` / `tool_result` / `blob`
+/ the intermediate forms `image_b64`, `file_b64`).
 
-**event_id の導出**（冪等の心臓部）:
+**Deriving event_id** (the heart of idempotency):
 
 ```
-event_id = sha256("source_kind|session_key|native_id または locator|kind|contentの指紋")[:32]
+event_id = sha256("source_kind|session_key|native_id or locator|kind|content fingerprint")[:32]
 ```
 
-タイムスタンプを**入れない**のがポイント（ソース側の時刻表記ゆれで別IDにならない）。
-同じ行を何度収集しても `INSERT OR IGNORE` で弾かれる＝再collectが常に安全。
+The point is that timestamps are **excluded** (time-format drift on the source side
+never mints a new ID). Collecting the same line any number of times bounces off
+`INSERT OR IGNORE` = re-collect is always safe.
 
-`blocks_text()` は検索・pack用の平文化。blob参照は
-`[添付(動画) clip.mp4 video/mp4 76B sha=e8066f89bf3f]` のように
-**種別語(日本語)・名前・サイズ**を含む形で描画される（メタデータ優先原則の実装点）。
+`blocks_text()` flattens content to plain text for search/pack. Blob references are
+rendered as `[添付(動画) clip.mp4 video/mp4 76B sha=e8066f89bf3f]` (literal stored
+text: 添付 = attachment, 動画 = video) — **kind word (Japanese), name and size**
+included. This is where the metadata-first principle is implemented.
 
-## 5. CAS — コンテンツアドレス格納とマジックナンバー判定
+## 5. CAS — content-addressed storage and magic-number sniffing
 
-**ファイル**: `tamo/cas.py`
+**File**: `tamo/cas.py`
 
-- 添付・貼付画像のbase64は取込時に `cas/ab/cd/<sha256>.<ext>` へ吸い出し（先頭2+2桁のファンアウトでディレクトリ肥大回避）、
-  イベント側は `blob` 参照ブロックに置換。同一バイナリは何度現れても1回しか保存されない
-- Claude Code transcriptは貼付画像をbase64で丸抱えして数MBに膨れるため、この置換でログが桁で縮む
+- Attachment and pasted-image base64 is siphoned into `cas/ab/cd/<sha256>.<ext>`
+  at ingestion time (2+2 hex-digit fan-out avoids directory bloat), and the event
+  side is replaced with a `blob` reference block. The same binary is stored once no
+  matter how many times it appears
+- Claude Code transcripts embed pasted images as base64 and balloon to several MB;
+  this replacement shrinks logs by orders of magnitude
 
-**sniff はマジックナンバー優先**（申告mimeは嘘をつく前提）:
+**sniff prefers magic numbers** (declared MIME is assumed to lie):
 
-| 先頭バイト | 判定 |
+| Leading bytes | Verdict |
 |---|---|
 | `%PDF` | application/pdf |
-| `PK\x03\x04` | ZIPを開いて内部構造で精密判定: `word/`→docx, `xl/`→xlsx, `ppt/`→pptx, それ以外→zip（`textract.office_kind`） |
-| `\x89PNG` / `\xff\xd8\xff` / `GIF8` / RIFF+`WEBP` | 画像各種 |
-| `ftyp`(4-8バイト目) | ブランド判定: `qt  `→mov, `M4A`→m4a, その他→mp4 |
-| `\x1aE\xdf\xa3`(EBML) | webm/mkv → video/webm |
-| RIFF+`WAVE` / `OggS` / `fLaC` / `ID3`・`\xff\xfb` | wav / ogg / flac / mp3 |
+| `PK\x03\x04` | Open the ZIP and judge precisely by internal structure: `word/`→docx, `xl/`→xlsx, `ppt/`→pptx, otherwise→zip (`textract.office_kind`) |
+| `\x89PNG` / `\xff\xd8\xff` / `GIF8` / RIFF+`WEBP` | The various image types |
+| `ftyp` (bytes 4–8) | Brand check: `qt  `→mov, `M4A`→m4a, otherwise→mp4 |
+| `\x1aE\xdf\xa3` (EBML) | webm/mkv → video/webm |
+| RIFF+`WAVE` / `OggS` / `fLaC` / `ID3`, `\xff\xfb` | wav / ogg / flac / mp3 |
 
-マジックに当たらないときだけ申告mimeを使う（`octet-stream`等の無意味な申告は無視）。
-`application/octet-stream` と嘘をつかれたxlsxが正しく判定されることをE2Eで確認済み。
+The declared MIME is used only when no magic matches (meaningless declarations
+like `octet-stream` are ignored). An xlsx lying as `application/octet-stream`
+being classified correctly is covered by an E2E test.
 
-種別語彙は `tamo/util.py` の `media_kind_ja()`（画像/動画/音声/PDF/Word文書/表計算/スライド/テキスト/圧縮/ファイル）。
-検索が「動画」のような日本語種別語で当たるのはこの語彙のおかげ。
+The kind vocabulary is `media_kind_ja()` in `tamo/util.py` (画像/動画/音声/PDF/
+Word文書/表計算/スライド/テキスト/圧縮/ファイル — image/video/audio/PDF/Word
+document/spreadsheet/slides/text/archive/file). This vocabulary is why a search for
+a Japanese kind word like 「動画」("video") hits.
 
-## 6. textract — 決定論テキスト抽出
+## 6. textract — deterministic text extraction
 
-**ファイル**: `tamo/textract.py`。方針は「**読めれば検索資産、読めなくても正常系**」。
+**File**: `tamo/textract.py`. The policy: "**readable = a search asset; unreadable
+is still the happy path**".
 
-| 形式 | 抽出器 | 実装 | 依存 |
+| Format | Extractor | Implementation | Deps |
 |---|---|---|---|
-| docx | `docx-xml` | `word/document.xml` の `<w:t>` を `</w:p>` 区切りで連結 | なし |
-| xlsx | `xlsx-xml` | シート名(`workbook.xml`) + `sharedStrings.xml` の `<si>` + inlineStrの `<t>` | なし |
-| pptx | `pptx-xml` | `ppt/slides/slide*.xml` の `<a:t>` をスライドごとに | なし |
-| PDF | `pypdf` → `pdf-naive` | 下記 | pypdf任意 |
-| txt/md/csv/json | `plain` | UTF-8 → **CP932** → UTF-16 の順で decode 試行 | なし |
-| html | `html-strip` | script/style除去 + タグ剥がし + `html.unescape` | なし |
+| docx | `docx-xml` | Concatenate `<w:t>` from `word/document.xml`, split on `</w:p>` | none |
+| xlsx | `xlsx-xml` | Sheet names (`workbook.xml`) + `<si>` from `sharedStrings.xml` + inlineStr `<t>` | none |
+| pptx | `pptx-xml` | `<a:t>` from `ppt/slides/slide*.xml`, per slide | none |
+| PDF | `pypdf` → `pdf-naive` | See below | pypdf optional |
+| txt/md/csv/json | `plain` | Try decoding UTF-8 → **CP932** → UTF-16, in that order | none |
+| html | `html-strip` | Drop script/style + strip tags + `html.unescape` | none |
 
-OOXML(docx/xlsx/pptx)の実体は「ZIP+XML」なので、`zipfile`+正規表現だけで
-依存ゼロの抽出が成立する — これがOffice対応をstdlibでやれる理由。
+OOXML (docx/xlsx/pptx) is really just "ZIP+XML", so `zipfile` plus regular
+expressions gives a zero-dependency extractor — that is why Office support is
+doable with the stdlib.
 
-**PDFの二段構え**:
-1. `pypdf` があれば最優先。ToUnicode CMap を解釈できるので**日本語PDFが読める**。
-   品質ゲート ≥0.5 を通れば採用
-2. 無ければ stdlib 素朴抽出: `stream..endstream` を `zlib.decompress`(FlateDecode)で試し、
-   `BT..ET` 内のリテラル文字列 `( )` の `Tj/TJ/'/"` だけ読む。
-   **16進文字列 `<...>` は最初から読まない** — CIDフォント(日本語PDFの主流)は
-   ここに来て素朴抽出では必ず化けるため
-3. 最後に**品質ゲート**（可読文字比率: 英数記号+かな+CJK漢字+全角。素朴抽出は≥0.66）。
-   通らないテキストは**捨てる**。化けたテキストを検索インデックスに入れて
-   誤ヒットさせるくらいなら「抽出なし」の方が正しい、という判断
+**The two-tier PDF approach**:
+1. `pypdf` first if available. It interprets ToUnicode CMaps, so **Japanese PDFs
+   are readable**. Adopted if it passes the quality gate ≥0.5
+2. Otherwise, naive stdlib extraction: try `zlib.decompress` (FlateDecode) on
+   `stream..endstream`, then read only literal strings `( )` in `Tj/TJ/'/"`
+   operators inside `BT..ET`. **Hex strings `<...>` are never read** — CID fonts
+   (the mainstream for Japanese PDFs) end up there, and naive extraction of them
+   is guaranteed mojibake
+3. Finally the **quality gate** (readable-character ratio: alphanumerics/symbols +
+   kana + CJK ideographs + full-width; ≥0.66 for naive extraction). Text that
+   fails is **discarded**. Better "no extraction" than garbled text in the search
+   index producing false hits
 
-上限: `MAX_TEXT=200,000字` / `MAX_BYTES=32MB`（それ以上は抽出せずメタのみ）。
+Limits: `MAX_TEXT=200,000 chars` / `MAX_BYTES=32MB` (beyond that, metadata only).
 
-抽出結果は `blob_texts` にsha256キャッシュされ、`tamo reindex-blobs` で
-旧DBの遡及抽出+FTS再登録ができる（`store.reindex_blob_texts`）。
+Results are sha256-cached in `blob_texts`; `tamo reindex-blobs` re-extracts old
+databases retroactively and refreshes FTS (`store.reindex_blob_texts`).
 
-## 7. アダプタ層とカーソル戦略
+## 7. Adapter layer and cursor strategy
 
-**ファイル**: `tamo/adapters/*.py`。全アダプタ共通の約束:
-(1) ソースに書かない (2) 壊れた行は `quarantine`+継続 (3) 未知の形は raw温存+`meta`イベント (4) 増分カーソル。
+**File**: `tamo/adapters/*.py`. The contract shared by every adapter:
+(1) never write to the source (2) broken lines → `quarantine` + keep going
+(3) unknown shapes → keep raw + `meta` event (4) incremental cursors.
 
-| アダプタ | 実体 | カーソル戦略 | 備考 |
+| Adapter | Source | Cursor strategy | Notes |
 |---|---|---|---|
-| `claude_code` | `~/.claude/projects/**/*.jsonl` | **バイトオフセット**（追記専用ログ向き） | 改行で終わらない最終行=書きかけはスキップして次回。CLI/VS Code拡張/JetBrains/Claude Desktop/VS用サードパーティ拡張が**同一保存先** |
-| `codex_cli` | `~/.codex/sessions/**/*.jsonl` | バイトオフセット | |
-| `aider` | `.aider.chat.history.md` | バイトオフセット | Markdown見出しでターン分割 |
-| `cursor_ide` | `state.vscdb` の `cursorDiskKV` | **rowid**（KVは追記的） | 旧`composerData`配列と新`bubbleId`分離の両対応。in-place更新は `--rescan` |
-| `generic_jsonl` | 任意（glob+フィールド名を設定） | バイトオフセット | 未対応エージェントの受け皿1 |
-| `inbox` | `~/.tamo/inbox/*.json` | 処理後 `done/` へ移動 | 受け皿2。ブラウザ拡張の投函先 |
+| `claude_code` | `~/.claude/projects/**/*.jsonl` | **Byte offset** (fits append-only logs) | A final line without a newline = still being written, skipped until next run. CLI / VS Code extension / JetBrains / Claude Desktop / third-party VS extension all share **the same location** |
+| `codex_cli` | `~/.codex/sessions/**/*.jsonl` | Byte offset | |
+| `aider` | `.aider.chat.history.md` | Byte offset | Turns split on Markdown headings |
+| `cursor_ide` | `cursorDiskKV` in `state.vscdb` | **rowid** (the KV store is append-ish) | Handles both the old `composerData` array and the new `bubbleId` split. In-place updates: `--rescan` |
+| `generic_jsonl` | Anything (configure glob + field names) | Byte offset | Catch-all #1 for unsupported agents |
+| `inbox` | `~/.tamo/inbox/*.json` | Move to `done/` after processing | Catch-all #2; where the browser extension posts |
 
-**inbox v1 形式**（`tamo.inbox.v1`）: `source/session/title/messages[{role,text,ts,attachments[]}]`。
-添付は `data_b64` があればCASへ、`url` だけならURLノート、
-**`{name, mime, size}` のメタだけでも受けて** `[添付(動画 未取得) … 50.0MB]` として本文に保全する
-（メタデータ優先原則。拡張が上限超過で落としたものも文脈は残る）。
+**inbox v1 format** (`tamo.inbox.v1`):
+`source/session/title/messages[{role,text,ts,attachments[]}]`. Attachments: with
+`data_b64` they go to the CAS; with only a `url` they become a URL note; **even
+bare `{name, mime, size}` metadata is accepted** and preserved in the body as
+`[添付(動画 未取得) … 50.0MB]` (literal stored text: "attachment (video, not
+fetched)"). The metadata-first principle: even what the extension dropped for
+exceeding limits keeps its context.
 
-## 8. probe — 実機フィンガープリンタ
+## 8. probe — real-machine fingerprinting
 
-**ファイル**: `tamo/probe.py`。「どのエージェントにも対応」を仕様書でなく実機で担保する道具。
+**File**: `tamo/probe.py`. The tool that backs "works with any agent" with real
+machines instead of spec sheets.
 
-- **走査対象**: Linux/WSLホーム + WSL2なら `/mnt/c/Users/*`（`TAMO_WIN_ROOT` で差し替え可、テストにも使用）
-- **Claude Code系**: `.claude/projects`（WSL/各Windowsユーザー）+ `CLAUDE_CONFIG_DIR`
-  （`.claude`ルート指しでも`projects`直指しでも追随）。
-  `.vscode-server/extensions/anthropic.claude-code*`（WSLリモート）/`.vscode/extensions`（ネイティブ/Win）を
-  検出したら「セッションは上記transcriptに書かれるので追加設定不要」と注記。
-  Visual Studio(.NET IDE)の `ClaudeCodeExtension` 痕跡も検出
-- **SQLite系(Cursor等)**: スナップショットして**テーブル一覧とキー接頭辞の分布**まで検分
-  （`composerData:` が何件、`bubbleId:` が何件…）→ ドリフトしたときに何が変わったか一目でわかる
-- **検出のみ**: Windsurf / Gemini CLI / goose / Cline / Copilot Chat は場所を報告するだけ。
-  実機のフィンガープリントを見てから `generic_jsonl` 設定か専用アダプタを足す運用
-- 結果は `sources.toml` に書き出し（`--write`）。collectはこの設定だけを見る
+- **Scan targets**: the Linux/WSL home, plus `/mnt/c/Users/*` under WSL2
+  (overridable via `TAMO_WIN_ROOT`, also used by tests)
+- **Claude Code family**: `.claude/projects` (WSL and each Windows user) +
+  `CLAUDE_CONFIG_DIR` (follows both a `.claude`-root value and a direct `projects`
+  value). When it detects `.vscode-server/extensions/anthropic.claude-code*` (WSL
+  remote) or `.vscode/extensions` (native/Windows), it notes "sessions are written
+  to the transcripts above, no extra configuration needed". Also detects Visual
+  Studio (.NET IDE) `ClaudeCodeExtension` traces
+- **SQLite family (Cursor etc.)**: snapshots the DB and inspects down to **the
+  table list and the distribution of key prefixes** (how many `composerData:`, how
+  many `bubbleId:`, …) → when drift happens, what changed is visible at a glance
+- **Detection only**: Windsurf / Gemini CLI / goose / Cline / Copilot Chat are
+  reported by location only. The plan: look at a real machine's fingerprint first,
+  then add a `generic_jsonl` config or a dedicated adapter
+- Results are written to `sources.toml` (`--write`). collect reads only this config
 
-## 9. optimize — 読出時最適化 P1〜P4
+## 9. optimize — read-time optimization P1–P4
 
-**ファイル**: `tamo/optimize.py`。全段**決定論**（LLM不使用、同入力→同出力）。
-「保存はいじらず、読むときに毎回この4段を通す」ので、アルゴリズム改善が過去データにも効く。
+**File**: `tamo/optimize.py`. Every stage is **deterministic** (no LLM, same input
+→ same output). "Storage is never touched; every read passes through these four
+stages", so algorithm improvements apply to past data too.
 
-| 段 | 名前 | 実装 |
+| Stage | Name | Implementation |
 |---|---|---|
-| P1 | dedup | 120字以上の**完全一致**再掲を省略参照化（`⟨e:xxxx⟩と同一`） |
-| P2 | snapshot折畳 | 同一ファイルへの `tool_result` 群を「最終版フル + 以前は `difflib.unified_diff`」に圧縮（diff上限3500字） |
-| P3 | 要点抽出 | 規則ベース正規表現（日英）: 決定/制約・前提/TODO/エラー→修正/触ったファイル の5分類 |
-| P4 | 予算詰め | 下記 |
+| P1 | dedup | Verbatim repeats of 120+ chars (**exact match**) collapsed into a reference (`⟨e:xxxx⟩と同一`, "same as ⟨e:xxxx⟩") |
+| P2 | snapshot folding | `tool_result` runs against the same file compressed into "final version in full + earlier as `difflib.unified_diff`" (diff capped at 3,500 chars) |
+| P3 | key-point extraction | Rule-based regexes (Japanese & English), 5 classes: decisions / constraints & assumptions / TODOs / error→fix / files touched |
+| P4 | budget packing | See below |
 
-**P4 の選抜ロジック**（`build_pack`）:
-- トークン見積り `estimate_tokens`: ASCII単語=1、CJK等の非語文字=1文字1トークンの近似
-  （日本語と英語が混ざる実会話で方向が合う、雑だが決定論な見積り）
-- TF-IDF: 簡易トークナイザ（ASCII単語 + **CJK文字バイグラム**）でベクトル化
-- 基礎スコア = `0.55 × 新しさ((i+1)/n) + 0.45 × cos(TF-IDF, query)`（query無指定なら新しさのみ）
-- **MMR** (λ=0.35): `score = base − 0.35 × max(既選抜との類似度)` で冗長な発話を抑制。
-  実装は増分max-sim更新のO(n·k)（素朴なO(n·k²)は10万イベントDBで44.7秒→増分化+候補上限800で0.42秒、106倍）。
-  ベクトルは事前正規化でコサイン=内積に
-- 予算(`--budget`)を超えた時点で打ち切り。要点セクション→会話テールの順に詰める
-- 全行に `⟨e:先頭8桁⟩` の出所IDが付き、`events` テーブルの原文へいつでも遡れる
+**P4 selection logic** (`build_pack`):
+- Token estimation `estimate_tokens`: ASCII word = 1, non-word chars such as CJK =
+  1 token per char (a crude but deterministic estimate that points the right way
+  for real conversations mixing Japanese and English)
+- TF-IDF: vectorized with a simple tokenizer (ASCII words + **CJK character
+  bigrams**)
+- Base score = `0.55 × recency((i+1)/n) + 0.45 × cos(TF-IDF, query)` (recency only
+  when no query is given)
+- **MMR** (λ=0.35): `score = base − 0.35 × max(similarity to already selected)`
+  suppresses redundant utterances. Implemented with incremental max-sim updates in
+  O(n·k) (the naive O(n·k²) took 44.7s on a 100k-event DB → incremental updates +
+  a candidate cap of 800 brought it to 0.42s, 106×). Vectors are pre-normalized so
+  cosine = dot product
+- Cut off the moment the budget (`--budget`) is exceeded; key-point sections are
+  packed first, then the conversation tail
+- Every line carries a `⟨e:first-8-hex⟩` provenance ID, always traceable to the
+  raw text in the `events` table
 
-## 10. 配布層 — CLI / HTTP inbox / MCP / export
+## 10. Serving layer — CLI / HTTP inbox / MCP / export
 
-**CLI**（`tamo/cli.py`, argparse）: `probe / collect / watch / stats / sessions / search /
-pack / export / reindex-blobs / mirror / rules / run / serve / mcp / prune / purge /
-quarantine / recall / show / token / hook / ingest-hook` の22サブコマンド。
-`mirror`（git向けMarkdownミラー, `tamo/derive.py`）と `rules`（導出ルールのマーカー冪等書込）、
-`run`（エージェント実行ラッパー）はSpecStory競合調査後に採り入れた還流系。
-`serve` は収集スレッド + HTTP inbox + MCP(streamable-http, FastMCP/uvicorn) + 日次自動pruneを
-1プロセスに束ねる常駐モード（単体サービスとしての本体）。`mcp` はstdio/HTTPの単体起動。
-`show` はセッション単体の表示（`latest`解決・`--tail`・`--since-event`による続き取得）。`prune`/`purge` は保持期間NFRの実装（`~/.tamo/settings.toml` の `[retention] days`、既定0=無期限。
-判定はイベント活動時刻でmtime不使用・dry-run必須・無言削除しない — Claude Codeのcleanup事故からの教訓）。
-`tamo/redact.py` はコミット/共有前の秘密情報マスク（既知プレフィックス型 + key=value行の保守的マスク、決定論）。
-`hook` はClaude Codeの `Stop`/`SessionEnd` フック用スニペットを出力し、
-`ingest-hook` がstdinの `transcript_path` を受けて**そのファイルだけ**即時増分取込（`async: true`で本体を塞がない）。
+**CLI** (`tamo/cli.py`, argparse): 22 subcommands — `probe / collect / watch /
+stats / sessions / search / pack / export / reindex-blobs / mirror / rules / run /
+serve / mcp / prune / purge / quarantine / recall / show / token / hook /
+ingest-hook`.
+`mirror` (git-friendly Markdown mirror, `tamo/derive.py`), `rules` (idempotent
+marker-block writes of derived rules) and `run` (agent execution wrapper) are the
+feedback features adopted after studying the SpecStory competitor.
+`serve` is the resident mode bundling the collection thread + HTTP inbox + MCP
+(streamable-http, FastMCP/uvicorn) + daily auto-prune into one process (the
+product as a standalone service). `mcp` starts stdio/HTTP standalone.
+`show` displays a single session (`latest` resolution, `--tail`, continuation via
+`--since-event`). `prune`/`purge` implement the retention NFR
+(`[retention] days` in `~/.tamo/settings.toml`, default 0 = forever; judged by
+event activity time, mtime unused; dry-run required; never deletes silently —
+a lesson from the Claude Code cleanup incident).
+`tamo/redact.py` masks secrets before commit/sharing (known key prefixes +
+conservative key=value line masking, deterministic).
+`hook` prints the snippet for Claude Code's `Stop`/`SessionEnd` hooks, and
+`ingest-hook` takes `transcript_path` on stdin and immediately ingests **that one
+file** incrementally (`async: true` keeps the host tool unblocked).
 
-**HTTP inbox**（`tamo/http_inbox.py`, stdlibの`http.server`）:
-- `127.0.0.1` バインドのみ（LAN非公開）+ `X-Tamo-Token`（`~/.tamo/inbox.token` 初回自動生成, `secrets`）。
-  照合は `secrets.compare_digest`（タイミングセーフ）。`/health` はトークンが付いてきた時だけ検査
-  （拡張の「接続確認」が認可までテストできる）
-- 認証OK=204 / トークン不一致=403(対処ガイド付き本文) / 非JSON=400 / 上限50MB
-- サーバは**検証してファイルに書くだけ**。パースは通常のinboxアダプタに一本化 —
-  ネットワークから直接パーサに触らせない（攻撃面の最小化）
+**HTTP inbox** (`tamo/http_inbox.py`, stdlib `http.server`):
+- Binds to `127.0.0.1` only (never exposed to the LAN) + `X-Tamo-Token`
+  (`~/.tamo/inbox.token`, auto-generated on first run via `secrets`). Comparison
+  uses `secrets.compare_digest` (timing-safe). `/health` validates the token only
+  when one is supplied (so the extension's "connection check" can test authz too)
+- Auth OK = 204 / token mismatch = 403 (body includes remediation guidance) /
+  non-JSON = 400 / 50MB cap
+- The server **only validates and writes to a file**. Parsing is funneled through
+  the regular inbox adapter — the network never touches a parser directly
+  (minimized attack surface)
 
-**MCP**（`tamo/mcp_server.py`, FastMCP, 任意extras）: 8ツール
-`recall（最初にこれ） / search_context / get_context / get_context_pack / list_sessions /
-get_session / get_blob_text / get_blob_base64`。
-登録は stdio が `claude mcp add tamo -- python -m tamo.mcp_server`（Cursor/Codex CLIも同じ）、
-HTTP(streamable-http, `tamo serve`)が `--header "X-Tamo-Token: $(tamo token)"` 付き。
-**HTTPは`_TokenGate`(ASGIラッパ)でトークン必須** — 書込(inbox)だけ認証して読出(全会話+blob)が
-素通しという非対称を避ける。stdioはクライアント子プロセス=本人なので不要。
-`get_blob_text` は添付の抽出テキスト（base64より軽い）、`get_blob_base64` は原物。
+**MCP** (`tamo/mcp_server.py`, FastMCP, optional extras): 8 tools —
+`recall (start here) / search_context / get_context / get_context_pack /
+list_sessions / get_session / get_blob_text / get_blob_base64`.
+Registration: stdio via `claude mcp add tamo -- python -m tamo.mcp_server` (same
+for Cursor/Codex CLI), HTTP (streamable-http, `tamo serve`) with
+`--header "X-Tamo-Token: $(tamo token)"`.
+**HTTP requires the token via `_TokenGate` (an ASGI wrapper)** — avoiding the
+asymmetry of authenticating writes (inbox) while reads (every conversation + blobs)
+pass through. stdio needs none: the client child process *is* the user.
+`get_blob_text` returns the extracted text of an attachment (lighter than base64);
+`get_blob_base64` returns the original bytes.
 
-**export**: 1行=1セッションの NDJSON（`tamo.session.v1`）。`--include-raw` で
-セッションに紐づく原文レコードも同梱 → OmniBrainのchunked distillation→HITLへそのまま流せる。
-**tamoが決定論収集、OmniBrainが意味的蒸留**という分業。
+**export**: NDJSON, one line = one session (`tamo.session.v1`). `--include-raw`
+bundles the raw records tied to each session → flows straight into OmniBrain's
+chunked distillation → HITL. The division of labor: **tamo does deterministic
+collection, OmniBrain does semantic distillation**.
 
-## 11. ブラウザ拡張 (MV3)
+## 11. Browser extension (MV3)
 
-**ディレクトリ**: `browser-extension/`。Chrome Manifest V3。
+**Directory**: `browser-extension/`. Chrome Manifest V3.
 
 ```
-popup.js ──(scoop要求)──> content/main.js ──> sites/*.js か generic.js
+popup.js ──(scoop request)──> content/main.js ──> sites/*.js or generic.js
                                 │ payload (tamo.inbox.v1)
 popup.js <──────────────────────┘
    │ tamo.post
 background.js(Service Worker) ──POST──> http://127.0.0.1:8787/inbox
 ```
 
-| 選定 | 理由 |
+| Choice | Why |
 |---|---|
-| localhost送信は**background SW**で行う | content scriptのfetchはページのCSP/mixed-content(https→http)に引っかかる。SWは `host_permissions`(127.0.0.1のみ)で堂々と送れる |
-| claude.ai/ChatGPTは**同一オリジンAPI**方式 | DOMはUI改版のたびに壊れるが、アプリ自身が使うJSON APIは桁違いに安定。claude.ai: `/api/organizations`→`chat_conversations?tree=True&rendering_mode=messages`。ChatGPT: `/api/auth/session`→`backend-api/conversation` の mappingツリーを `current_node` から根へ遡行 |
-| 失敗時は**汎用DOMへ自動フォールバック** | payloadに `note: "site adapter failed: …"` を残す。壊れたら直すのは `sites/*.js` 1ファイル |
-| Geminiのみ DOM方式 | 会話取得に使える安定JSON APIが無い。`<user-query>`/`<model-response>` カスタム要素を読む |
-| 汎用抽出は**3段ヒューリスティック** | ①role属性(`data-message-author-role`等) ②クラス名キーワード(user/assistant/ai…) ③繰り返し兄弟要素を交互推定。最後の砦はmain全文1メッセージ |
-| 未対応サイトは**オンデマンド注入** | `activeTab`+`scripting.executeScript`。`<all_urls>` を要求しない=権限最小 |
-| 設定は `chrome.storage.sync` | ポート(既定8787)とトークン。popupから保存 |
+| localhost POSTs happen in the **background SW** | A content script's fetch trips over the page's CSP / mixed content (https→http). The SW can send freely under `host_permissions` (127.0.0.1 only) |
+| claude.ai/ChatGPT use the **same-origin API** approach | The DOM breaks with every UI redesign; the JSON APIs the app itself uses are orders of magnitude more stable. claude.ai: `/api/organizations` → `chat_conversations?tree=True&rendering_mode=messages`. ChatGPT: `/api/auth/session` → walk the `backend-api/conversation` mapping tree from `current_node` back to the root |
+| On failure, **automatic fallback to generic DOM** | The payload keeps `note: "site adapter failed: …"`. When something breaks, the fix is one `sites/*.js` file |
+| Gemini alone uses the DOM approach | No stable JSON API usable for conversation retrieval. Reads the `<user-query>`/`<model-response>` custom elements |
+| Generic extraction is a **3-tier heuristic** | (1) role attributes (`data-message-author-role` etc.) (2) class-name keywords (user/assistant/ai…) (3) alternation inferred from repeated sibling elements. Last resort: the whole `main` as one message |
+| Unsupported sites get **on-demand injection** | `activeTab`+`scripting.executeScript`. Never requests `<all_urls>` = minimal permissions |
+| Settings in `chrome.storage.sync` | Port (default 8787) and token. Saved from the popup |
 
-**添付ポリシー**（`content/lib.js`）: 上限 **6MB/添付・20MB/会話・20個・400メッセージ・10万字/メッセージ**。
-- 画像: fetch→b64同梱（48px未満のアイコンは除外）
-- **動画/音声: 本体は取らない**。`poster` があればサムネイルだけ同梱し、
-  `[添付(動画 未取得) …]` ノートを本文に必ず残す — Geminiの動画添付にも柔軟に対応
-- claude.aiのアップロード文書: プラットフォームの**抽出済みテキスト**(`extracted_content`)を同梱
-- ChatGPTの画像/ファイル: `files/{id}/download` でURL解決→b64（失敗はノートへ）
-- b64化は `TextEncoder`+32KBチャンク（巨大文字列での `btoa` スタック溢れ回避）
+**Attachment policy** (`content/lib.js`): limits of **6MB/attachment, 20MB/conversation,
+20 attachments, 400 messages, 100k chars/message**.
+- Images: fetch → bundle as b64 (icons under 48px excluded)
+- **Video/audio: the payload is never fetched.** If a `poster` exists, only the
+  thumbnail is bundled, and a `[添付(動画 未取得) …]` note ("attachment (video,
+  not fetched)") is always left in the body — this also handles Gemini's video
+  attachments gracefully
+- claude.ai uploaded documents: bundles the platform's **already-extracted text**
+  (`extracted_content`)
+- ChatGPT images/files: resolve the URL via `files/{id}/download` → b64 (failures
+  become notes)
+- b64 encoding uses `TextEncoder` + 32KB chunks (avoids `btoa` stack overflow on
+  huge strings)
 
-## 12. WSL2 / Windows 統合
+## 12. WSL2 / Windows integration
 
-| 論点 | 対応 |
+| Concern | Approach |
 |---|---|
-| Windows側のtranscript | probeが `/mnt/c/Users/*/.claude/projects` を走査（`TAMO_WIN_ROOT`で差替可） |
-| `.claude` の移設 | `CLAUDE_CONFIG_DIR` 環境変数に追随（VS/VS Code拡張も同じ場所を読む） |
-| ブラウザ(Windows)→tamo(WSL) | WSL2のlocalhostフォワーディング（Win11既定ON）で `127.0.0.1:8787` が届く。`%UserProfile%\.wslconfig` の `localhostForwarding=true` |
-| `/mnt/c` のファイル監視 | 9pではinotifyが効かない → `watch` は**ポーリング設計**（`--interval`） |
-| `/mnt/c` のSQLiteロック | snapshot_sqlite（コピーしてから読む）で回避 |
+| Windows-side transcripts | probe scans `/mnt/c/Users/*/.claude/projects` (overridable via `TAMO_WIN_ROOT`) |
+| Relocated `.claude` | Follows the `CLAUDE_CONFIG_DIR` environment variable (the VS / VS Code extensions read the same location) |
+| Browser (Windows) → tamo (WSL) | WSL2 localhost forwarding (on by default on Win11) delivers `127.0.0.1:8787`. `localhostForwarding=true` in `%UserProfile%\.wslconfig` |
+| File watching on `/mnt/c` | inotify does not work over 9p → `watch` is **polling-based** (`--interval`) |
+| SQLite locks on `/mnt/c` | Avoided by snapshot_sqlite (copy, then read) |
 
-## 13. テスト戦略と実測値
+## 13. Test strategy and measured results
 
-**pytest自動テスト**（`tests/test_*.py`, 55+件）+ 生成器方式のfixture（`tests/make_fixtures.py`=
-5ソース模擬環境、`tests/make_attachment_fixtures.py`=合成PDF/docx/xlsx）。
-CI（`.github/workflows/ci.yml`）は ubuntu/windows × Python 3.11/3.13 のマトリクスで
-pytestを回し、拡張JSは `node --check` で構文検証。カバレッジの柱:
-冪等性 / encoding耐性(cp932再現) / ロック回収 / CAS自己修復 / inboxのcommit後move /
-quarantine運用 / redactパターン / HTTP認可 / MCPツール+認証ゲート(mcp導入時)。
-ライブサイトに触れない拡張は**契約テスト**
-（lib.jsと同一ロジックでpayload生成→inbox→collect→検索）で担保。
+**pytest suite** (`tests/test_*.py`, 55+ tests) + generator-style fixtures
+(`tests/make_fixtures.py` = a mock environment of 5 sources,
+`tests/make_attachment_fixtures.py` = synthetic PDF/docx/xlsx).
+CI (`.github/workflows/ci.yml`) runs pytest on an ubuntu/windows × Python
+3.11/3.13 matrix and syntax-checks the extension JS with `node --check`.
+Coverage pillars: idempotency / encoding resilience (cp932 reproduction) / lock
+reclamation / CAS self-healing / inbox move-after-commit / quarantine flows /
+redact patterns / HTTP authorization / MCP tools + auth gate (when mcp installed).
+The extension, which cannot touch live sites, is covered by **contract tests**
+(generate a payload with the same logic as lib.js → inbox → collect → search).
 
-| 検証 | 結果 |
+| Verification | Result |
 |---|---|
-| フレッシュDB E2E（probe→collect） | events=22 / sessions=7 / blobs=4 / blob_texts=3 / quarantine=1 |
-| 冪等性 | 2回目collectは全ソース +0 |
-| ドリフト実証（正常追記/壊れJSON/未知スキーマの3行追記） | 増分+2 / quarantine+1 / raw温存+metaイベントで**無停止** |
-| 添付抽出 | docx-xml 42字（「甲板カバー連動」検索HIT）/ xlsx-xml 20字（嘘mime→magic正判定）/ pdf-naive 64字 / pypdf 53字 |
-| メタのみ添付 | `[添付(動画 未取得) berth_trial.mp4 video/mp4 50.0MB]` が本文に保全、種別語「動画」で検索HIT |
-| pack | 5ソース18イベント → 1285トークン、全行⟨e:xxxx⟩付き |
-| 性能(10万イベント/195MB, tests/bench.py) | 取込8,000件/s / FTS検索0.04〜16ms / tail取得0.1ms / 続き取得4ms / MCP get_session(compact) 3ms / pack(5,000ev) 0.42s |
-| HTTP inbox | 204(正token) / 403(偽) / 400(非JSON) → 取込確認 |
-| MCP | 8ツールの直接呼出し + list_tools登録確認 |
-| 拡張 | 全JS `node --check` PASS / manifest妥当 / 契約テスト（添付テキスト"JIS Z 3183"検索HIT・未取得ノート保全） |
+| Fresh-DB E2E (probe→collect) | events=22 / sessions=7 / blobs=4 / blob_texts=3 / quarantine=1 |
+| Idempotency | Second collect is +0 across all sources |
+| Drift drill (append 3 lines: valid / broken JSON / unknown schema) | +2 incremental / quarantine +1 / raw kept + meta event, **no stoppage** |
+| Attachment extraction | docx-xml 42 chars (search hit on 「甲板カバー連動」, a Japanese sample phrase) / xlsx-xml 20 chars (lying MIME → correct magic verdict) / pdf-naive 64 chars / pypdf 53 chars |
+| Metadata-only attachment | `[添付(動画 未取得) berth_trial.mp4 video/mp4 50.0MB]` preserved in the body, search hit on the kind word 「動画」("video") |
+| pack | 5 sources, 18 events → 1,285 tokens, every line tagged ⟨e:xxxx⟩ |
+| Performance (100k events / 195MB, tests/bench.py) | Ingestion 8,000 ev/s / FTS search 0.04–16ms / tail fetch 0.1ms / continuation fetch 4ms / MCP get_session (compact) 3ms / pack (5,000 ev) 0.42s |
+| HTTP inbox | 204 (valid token) / 403 (forged) / 400 (non-JSON) → ingestion confirmed |
+| MCP | Direct calls to all 8 tools + list_tools registration check |
+| Extension | All JS `node --check` PASS / manifest valid / contract tests (search hit on attachment text "JIS Z 3183", not-fetched note preserved) |
 
-## 14. 壊れたらどこを直すか（早見表）
+## 14. Where to fix it when it breaks (quick reference)
 
-| 症状 | まず見る | 直す場所 |
+| Symptom | Look at first | Fix in |
 |---|---|---|
-| `tamo stats` の quarantine が増えた | `quarantine` テーブルの error と原文 | 該当 `tamo/adapters/*.py` の寛容パーサ |
-| Cursorの新形式で events が増えない | `tamo probe` のキー接頭辞分布 | `adapters/cursor_ide.py` |
-| Claude Code transcriptの形式変更 | quarantine + probeのtranscript件数 | `adapters/claude_code.py`（公式にも「内部形式はバージョン間で変わる」旨あり） |
-| claude.ai/ChatGPTで「掬う」失敗 | popupの `⚠ site adapter failed: …` | `browser-extension/content/sites/*.js`（その間もgeneric DOMで動き続ける） |
-| 新しいAIチャットサイト対応 | genericで掬えるか試す | `sites/` に1ファイル追加 + manifest の matches |
-| 未知のCLIエージェント | `tamo probe` の detected_only | `sources.toml` に `generic_jsonl` 設定 or アダプタ追加 |
-| 日本語PDFが検索に載らない | `blob_texts.extractor` が空か | `pip install pypdf` → `tamo reindex-blobs` |
-| 添付の抽出器を改善した | — | `tamo reindex-blobs` で遡及再抽出 |
+| quarantine count in `tamo stats` grows | The `error` and raw text in the `quarantine` table | The tolerant parser in the matching `tamo/adapters/*.py` |
+| Cursor's new format yields no new events | Key-prefix distribution from `tamo probe` | `adapters/cursor_ide.py` |
+| Claude Code transcript format change | quarantine + probe's transcript count | `adapters/claude_code.py` (officially documented as "internal format may change between versions") |
+| Scoop fails on claude.ai/ChatGPT | `⚠ site adapter failed: …` in the popup | `browser-extension/content/sites/*.js` (meanwhile the generic DOM path keeps working) |
+| Supporting a new AI chat site | Try whether generic can scoop it | Add one file under `sites/` + a manifest `matches` entry |
+| An unknown CLI agent | `detected_only` from `tamo probe` | A `generic_jsonl` entry in `sources.toml`, or a new adapter |
+| Japanese PDFs missing from search | Is `blob_texts.extractor` empty? | `pip install pypdf` → `tamo reindex-blobs` |
+| You improved an extractor | — | `tamo reindex-blobs` for retroactive re-extraction |
 
-## 15. 用語集
+## 15. Glossary
 
-| 語 | 意味 |
+| Term | Meaning |
 |---|---|
-| CES | Canonical Event Schema。全ソース共通の正規化イベント形式（v1） |
-| CAS | Content-Addressed Storage。sha256でアドレスするblob格納。重複排除が自動で付いてくる |
-| FTS5 / trigram | SQLiteの全文検索拡張 / 3文字窓トークナイザ。日本語部分一致の要 |
-| WAL | Write-Ahead Logging。読み書き並行とクラッシュ耐性のためのSQLiteジャーナルモード |
-| TF-IDF / MMR | 語の希少性重み / Maximal Marginal Relevance（関連性と多様性のバランス選抜） |
-| quarantine | パース不能データの隔離場所。原文+エラーを保持し、後日アダプタ修正で救出できる |
-| HITL | Human-in-the-Loop。tamoは対象外（決定論収集）で、下流OmniBrainの承認工程を指す |
-| MV3 | Chrome拡張 Manifest V3。Service Worker常駐+宣言的権限モデル |
-| inbox v1 | `tamo.inbox.v1`。ブラウザ拡張等がtamoへ投函するJSON契約 |
-| locator | 原文の出所座標（例 `path::byte-offset` / `inbox::file.json`）。raw_recordsのUNIQUEキー |
+| CES | Canonical Event Schema. The normalized event format shared by all sources (v1) |
+| CAS | Content-Addressed Storage. Blob store addressed by sha256; deduplication comes for free |
+| FTS5 / trigram | SQLite's full-text search extension / 3-char-window tokenizer. The key to CJK substring matching |
+| WAL | Write-Ahead Logging. SQLite journal mode for concurrent read/write and crash resilience |
+| TF-IDF / MMR | Term-rarity weighting / Maximal Marginal Relevance (balancing relevance and diversity in selection) |
+| quarantine | Where unparseable data is isolated. Keeps raw text + error, rescuable later by fixing the adapter |
+| HITL | Human-in-the-Loop. Out of scope for tamo (deterministic collection); refers to downstream OmniBrain's approval step |
+| MV3 | Chrome extension Manifest V3. Resident Service Worker + declarative permission model |
+| inbox v1 | `tamo.inbox.v1`. The JSON contract browser extensions etc. use to post into tamo |
+| locator | Provenance coordinates of raw text (e.g. `path::byte-offset` / `inbox::file.json`). The UNIQUE key of raw_records |

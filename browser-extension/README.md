@@ -1,46 +1,54 @@
-# tamo scoop — ブラウザ拡張（MV3）
+# tamo scoop — browser extension (MV3)
 
-AIチャットサイトの会話を **tamo の inbox（localhost）へ投函**する拡張。
-データはlocalhost以外へ一切送りません。
+English | [日本語](README.ja.md)
 
-## 対応
+An extension that **posts conversations from AI chat sites into tamo's inbox
+(localhost)**. Data is never sent anywhere except localhost.
 
-| サイト | 方式 | 添付 |
+## Support
+
+| Site | Method | Attachments |
 |---|---|---|
-| claude.ai | 同一オリジンAPI（アプリ自身が使うJSON） | 文書はclaude.aiの抽出済みテキストを同梱、画像はpreviewをb64 |
-| chatgpt.com / chat.openai.com | 同一オリジンAPI（mappingツリー復元） | 画像/ファイルはdownload URL解決でb64 |
-| gemini.google.com | DOM（user-query/model-response要素） | メッセージ内画像をb64 |
-| その他すべて | 汎用DOMヒューリスティック（オンデマンド注入） | メッセージ内画像をb64 |
+| claude.ai | Same-origin API (the JSON the app itself uses) | Documents: bundles claude.ai's already-extracted text; images: preview as b64 |
+| chatgpt.com / chat.openai.com | Same-origin API (mapping-tree reconstruction) | Images/files: resolved via download URL → b64 |
+| gemini.google.com | DOM (user-query / model-response elements) | In-message images as b64 |
+| Everything else | Generic DOM heuristics (injected on demand) | In-message images as b64 |
 
-**添付ポリシー**: b64で取れるものは同梱（6MB/添付・20MB/会話・20個まで）。
-取れない/超過したものは `[添付(未取得): 名前 mime サイズ]` を本文に必ず残す —
-情報を黙って落とさない。同梱されたPDF/docx/xlsxはtamo側で自動テキスト抽出され全文検索できます。
+**Attachment policy**: whatever can be fetched as b64 is bundled (6MB/attachment,
+20MB/conversation, up to 20 items). Anything unfetchable or over the limits always
+leaves `[添付(未取得): 名前 mime サイズ]` in the body (literal stored text:
+"attachment (not fetched): name mime size") — information is never dropped
+silently. Bundled PDF/docx/xlsx files are automatically text-extracted on the tamo
+side and become full-text searchable.
 
-## インストール
+## Installation
 
-1. `chrome://extensions` → デベロッパーモードON → 「パッケージ化されていない拡張機能を読み込む」→ このフォルダ
-2. `tamo serve` を起動（WSL/ネイティブどちらでも。これ1つで投函口+MCP+自動収集が全部立つ）
-3. 拡張のpopupを一度開く → **自動ペアリング**されトークン設定は不要（`GET /pair`、
-   Hostヘッダ検査付きでlocalhost以外からは読めない）。トークンがズレたら
-   popupの**「再ペアリング」**ボタンで即復旧できます（403の対処はこれ）
-4. AIチャットの会話ページで**画面右上の🎣ボタン**をワンクリック → その場に結果トースト
-   （popupの「この会話を掬う」でも同じ。🎣常駐はpopupのチェックでOFF可。
-   長い会話は過去分の自動読込中、ボタンに進捗 n/25 が出ます）
+1. `chrome://extensions` → enable Developer mode → *Load unpacked* → this folder
+2. Start `tamo serve` (WSL or native, either works; this one process brings up
+   the inbox + MCP + automatic collection)
+3. Open the extension popup once → it **pairs automatically**, no token setup
+   needed (`GET /pair`, with a Host-header check so nothing outside localhost can
+   read it). If the token ever drifts, the popup's **Re-pair** button restores it
+   instantly (this is the fix for a 403)
+4. On an AI chat conversation page, one click on the **🎣 button (top right)** →
+   a result toast appears in place (the popup's scoop button does the same; the
+   persistent 🎣 can be turned off with a popup checkbox. For long conversations,
+   the button shows progress n/25 while older messages auto-load)
 
-> **WSL2のlocalhost**: Windows 11のWSL2はlocalhostフォワーディングが既定で有効なので、
-> Windowsのブラウザから `127.0.0.1:8787` でWSL内のtamoに届きます。
-> 届かない場合は `%UserProfile%\.wslconfig` の `localhostForwarding=true` を確認してください。
+> **WSL2 localhost**: on Windows 11, WSL2's localhost forwarding is enabled by
+> default, so the Windows browser reaches tamo inside WSL at `127.0.0.1:8787`.
+> If it doesn't, check `localhostForwarding=true` in `%UserProfile%\.wslconfig`.
 
-## 拡張を更新した後に「Cannot read properties of undefined」が出たら
+## If "Cannot read properties of undefined" appears after updating the extension
 
-Chromeの仕様で、拡張のリロード後は**更新前から開いていたタブ**の旧スクリプトが
-`chrome.runtime` を失います（孤児化）。そのタブを **F5で再読み込み** すれば直ります。
-現行版は孤児化を検知して「再読み込みしてください」トーストを出し、
-バックグラウンドの巡回も自動停止します。
+By Chrome's design, after an extension reload the old scripts in **tabs opened
+before the update** lose `chrome.runtime` (orphaning). **Reload that tab with F5**
+and it's fixed. The current version detects orphaning, shows a "please reload"
+toast, and automatically stops its background polling as well.
 
-## ドリフトについて（正直な話）
+## About drift (an honest note)
 
-claude.ai / ChatGPT のAPIは非公開で、予告なく変わります。この拡張は
-**サイトアダプタが失敗したら自動で汎用DOM抽出にフォールバック**し、
-その場合もpayloadに `note: "site adapter failed: ..."` を残します。
-壊れたら直すのはアダプタ1ファイルだけです（`content/sites/*.js`）。
+The claude.ai / ChatGPT APIs are private and change without notice. This extension
+**automatically falls back to generic DOM extraction when a site adapter fails**,
+and even then keeps `note: "site adapter failed: ..."` in the payload. When
+something breaks, the fix is a single adapter file (`content/sites/*.js`).

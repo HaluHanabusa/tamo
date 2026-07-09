@@ -122,9 +122,9 @@ Windsurf / Cline / Copilot Chat and others are *detected and reported* by
 | Document | Contents |
 |---|---|
 | [docs/TUTORIAL.md](docs/TUTORIAL.md) | hands-on walkthrough, zero to cross-agent recall in 15 min ([日本語](docs/TUTORIAL.ja.md)) |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | design principles, data model, optimizer, retention risks (Japanese) |
-| [docs/TECH_STACK.md](docs/TECH_STACK.md) | why each technology was chosen, file-by-file map (Japanese) |
-| [docs/VERIFICATION.md](docs/VERIFICATION.md) | on-machine verification steps (Japanese) |
-| [browser-extension/README.md](browser-extension/README.md) | extension details (Japanese) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | design principles, data model, optimizer, retention risks ([日本語](docs/ARCHITECTURE.ja.md)) |
+| [docs/TECH_STACK.md](docs/TECH_STACK.md) | why each technology was chosen, file-by-file map ([日本語](docs/TECH_STACK.ja.md)) |
+| [docs/VERIFICATION.md](docs/VERIFICATION.md) | on-machine verification steps ([日本語](docs/VERIFICATION.ja.md)) |
+| [browser-extension/README.md](browser-extension/README.md) | extension details ([日本語](browser-extension/README.ja.md)) |
 
 MIT License

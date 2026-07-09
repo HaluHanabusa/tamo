@@ -38,6 +38,15 @@
 - README を「趣旨と使い方」に再構成し、技術解説を `docs/ARCHITECTURE.md` へ分離
 - 拡張の未使用 `http://localhost/*` 権限を削除（実装は127.0.0.1のみ）
 
+### 国際化 第2波（同版に追補）
+- **CLI/HTTPサーバのUIメッセージをi18n化**（`tamo/i18n.py`、gettext方式・msgid=日本語・
+  既定英語、ロケールまたは `TAMO_LANG` で日本語）。翻訳対象はUIフィードバックのみで、
+  pack/recall/mirror/rules本文と保存データ語彙は決定論のため対象外
+  （設計は docs/ARCHITECTURE.md §14）。辞書の網羅とplaceholder一致はASTスキャンのテストで強制
+- MCPツール説明をLLM向けの固定英語に変更
+- **深層ドキュメントを英訳**: ARCHITECTURE / TECH_STACK / VERIFICATION / 拡張README を
+  英語主・`*.ja.md` 併設に（README/TUTORIALと同じパターン）
+
 ### 国際化・保存期間（同版に追補）
 - README を英語化（正）し `README.ja.md` を併設。15分チュートリアル
   `docs/TUTORIAL.md` / `TUTORIAL.ja.md` を新設（実データ不要のサンドボックス付き）
