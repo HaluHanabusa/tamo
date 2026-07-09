@@ -182,6 +182,8 @@ def cmd_probe(args):
         # encoding必須: OS既定(cp932等)で書くと読取側tomllib(厳格UTF-8)が全collectを道連れにする
         sp.write_text(toml, encoding="utf-8")
         print(f"-> {sp} に {len(res['sources'])} ソースを書き込みました")
+        print("   保持期間は既定で無期限です（業務PCでは settings.toml の [retention] days = 90 等を推奨。"
+              "リスクと運用指針: docs/ARCHITECTURE.md）", file=sys.stderr)
     else:
         print("-- sources.toml（--write で保存） --")
         print(toml)
@@ -263,10 +265,15 @@ def cmd_watch(args):
 
 
 def cmd_stats(args):
+    from .config import load_settings
+
     store = _store()
     s = store.stats()
     store.close()
     print(json.dumps(s, ensure_ascii=False, indent=2))
+    # 無期限保存の防波堤: 実測サイズ(DB+添付)が閾値超過ならstderrで知らせる
+    warn_db_size(int(load_settings()["retention"].get("warn_db_mb", 2048) or 0),
+                 usage_mb=(s["db_bytes"] + s["blob_bytes"]) / 1e6)
 
 
 def cmd_sessions(args):
@@ -431,18 +438,48 @@ def _rules_refresh(rules_file: str | None, project: str | None) -> None:
         print(f"[tamo] rules {action}: {rules_file}", file=sys.stderr)
 
 
+def _disk_usage_mb() -> float:
+    """~/.tamo 全体（DB+WAL+CAS+inbox）の実ディスク使用量をMBで返す。"""
+    total = 0
+    for p in tamo_home().rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total / 1e6
+
+
+def warn_db_size(warn_mb: int, usage_mb: float | None = None) -> bool:
+    """閾値超過なら警告する。無期限保存の既定が「黙って増え続ける」事故にならないための防波堤。"""
+    if not warn_mb or warn_mb <= 0:
+        return False
+    mb = usage_mb if usage_mb is not None else _disk_usage_mb()
+    if mb < warn_mb:
+        return False
+    print(f"[tamo] データが {mb / 1000:.1f}GB に達しています（警告閾値 {warn_mb}MB）。\n"
+          f"  保持期間の設定: ~/.tamo/settings.toml の [retention] days = 90 など\n"
+          f"  手動整理: tamo prune --days N --dry-run で確認 → --vacuum で詰める\n"
+          f"  この警告の閾値変更/無効化: [retention] warn_db_mb（0=警告しない）",
+          file=sys.stderr)
+    return True
+
+
 def _maybe_autoprune() -> None:
-    """retention.days>0 のとき1日1回だけpruneを走らせる（serve/watchの無人運転用）。"""
+    """1日1回のメンテナンス: ディスク使用量の警告 + retention.days>0ならprune（serve/watchの無人運転用）。"""
     from datetime import date
 
     from .config import load_settings
 
-    days = load_settings()["retention"]["days"]
-    if not days:
-        return
+    st = load_settings()["retention"]
     marker = tamo_home() / ".last_prune"
     today = date.today().isoformat()
     if marker.exists() and marker.read_text(encoding="utf-8").strip() == today:
+        return
+    warn_db_size(int(st.get("warn_db_mb", 2048) or 0))
+    days = st["days"]
+    if not days:
+        marker.write_text(today, encoding="utf-8")
         return
     store = _store()
     try:
