@@ -3,21 +3,31 @@
   "name": "tamo scoop",
   "version": "0.2.0",
   "description": "AIチャットの会話を tamo（ローカル収集器）の inbox へ投函する。データはlocalhost以外へ送らない。",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": [
     "storage",
     "activeTab",
     "scripting"
   ],
   "host_permissions": [
-    "http://127.0.0.1/*",
-    "http://localhost/*"
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "tamo scoop"
+    "default_title": "tamo scoop",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
   },
   "content_scripts": [
     {
