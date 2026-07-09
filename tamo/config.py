@@ -16,17 +16,32 @@ def load_sources() -> list[dict]:
     p = sources_path()
     if not p.exists():
         return [{"kind": "inbox", "key": "inbox:default", "enabled": True}]
-    with p.open("rb") as f:
-        data = tomllib.load(f)
+    try:
+        with p.open("rb") as f:
+            data = tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        # 生トレースバックにしない: 行番号付きの原因と直し方を1画面で伝える
+        raise SystemExit(
+            f"sources.toml の書式エラー: {e}\n"
+            f"  ファイル: {p}\n"
+            f"  手で直すか、`tamo probe --write` で再生成できます（既存は .bak に退避されます）"
+        ) from e
+    except UnicodeDecodeError as e:
+        raise SystemExit(
+            f"sources.toml がUTF-8で読めません（旧tamoがOS既定エンコーディングで書いた可能性）: {e}\n"
+            f"  ファイル: {p}\n"
+            f"  `tamo probe --write` で再生成してください（既存は .bak に退避されます）"
+        ) from e
     return [s for s in data.get("source", []) if s.get("enabled", True)]
 
 
 def inbox_token() -> str:
     p = tamo_home() / "inbox.token"
     if not p.exists():
-        p.write_text(secrets.token_urlsafe(24) + "\n")  # 改行を付ける（catでプロンプトと合体して見えなくなる事故防止）
+        # 改行を付ける（catでプロンプトと合体して見えなくなる事故防止）
+        p.write_text(secrets.token_urlsafe(24) + "\n", encoding="utf-8")
         p.chmod(0o600)
-    return p.read_text().strip()
+    return p.read_text(encoding="utf-8").strip()
 
 
 # ------------------------------------------------------------ 設定(NFR含む)
@@ -69,6 +84,7 @@ def ensure_settings_file() -> Path:
 def load_settings() -> dict:
     import copy
     import os
+    import sys
 
     s = copy.deepcopy(_DEFAULT_SETTINGS)
     p = settings_path()
@@ -79,8 +95,10 @@ def load_settings() -> dict:
             for sect, vals in data.items():
                 if isinstance(vals, dict):
                     s.setdefault(sect, {}).update(vals)
-        except Exception:  # noqa: BLE001  壊れた設定ファイルでも既定値で動き続ける
-            pass
+        except Exception as e:  # noqa: BLE001  壊れた設定ファイルでも既定値で動き続ける
+            # ただし無言にはしない — typoした設定が効いていないことに気づけるように
+            print(f"[tamo] settings.toml が読めません（既定値で続行）: {e}\n"
+                  f"  ファイル: {p}", file=sys.stderr)
     env = os.environ.get("TAMO_RETENTION_DAYS")
     if env and env.isdigit():
         s["retention"]["days"] = int(env)

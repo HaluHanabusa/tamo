@@ -38,6 +38,7 @@ class InboxAdapter(Adapter):
         done = root / "done"
         done.mkdir(exist_ok=True)
         items: list[dict] = []
+        self._pending_moves: list[tuple[Path, Path]] = []
         for p in sorted(root.glob("*.json")):
             raw = p.read_bytes()
             locator = f"inbox::{p.name}"
@@ -49,18 +50,41 @@ class InboxAdapter(Adapter):
                     items.append(item(locator, raw, self._parse(obj, locator)))
                 except Exception as e:  # noqa: BLE001
                     items.append(item(locator, raw, [], error=str(e)))
-            p.rename(done / p.name)
+            # done/への移動はcommit後のfinalize()で行う。ここで動かすとcommit前の
+            # クラッシュでイベント未保存のままファイルが再読対象外になり、黙って失われる
+            self._pending_moves.append((p, done / p.name))
         return cursor, items
+
+    def finalize(self) -> None:
+        import os
+
+        for src, dst in getattr(self, "_pending_moves", []):
+            try:
+                os.replace(src, dst)  # 既存の同名done/も上書き（Windowsのrename衝突でwatchを殺さない）
+            except OSError:
+                pass  # 消せない場合は残す — locator一意+event_id冪等なので再取込されても安全
+        self._pending_moves = []
 
     def _parse(self, obj: dict, locator: str) -> list[dict]:
         # source_kind は「輸送経路(inbox)」でなく「発生面(claude_web/gemini_web/…)」を持つ。
-        # 面での絞り込み(search/recall/list_sessionsのsource)と per_source 集計の正が这裡。
+        # 面での絞り込み(search/recall/list_sessionsのsource)と per_source 集計の正がここ。
         src = str(obj.get("source", "web")).strip().lower() or "web"
         sess = str(obj.get("session", "unknown"))
         skey = f"{src}:{sess}"
         title = obj.get("title")
         cap_ts = obj.get("captured_at")  # ブラウザ拡張が付ける取得時刻。ts無しメッセージの時間軸フォールバック
         events: list[dict] = []
+        # 拡張が残した注記（アダプタfallback理由・上限切詰め等）はmetaイベントとして保全する
+        # — 「情報を黙って落とさない」原則。同文はnative_idの内容ハッシュで冪等
+        note = obj.get("note")
+        if isinstance(note, str) and note.strip():
+            ntxt = note.strip()[:2000]
+            events.append(make_event(
+                source_kind=src, session_key=skey, seq=-1, actor="system", kind="meta",
+                content=[{"type": "text", "text": f"[scoop note] {ntxt}"}],
+                locator=f"{locator}#note", ts=cap_ts,
+                native_id=f"note:{sha256_bytes(ntxt.encode())[:16]}",
+            ))
         seen_h: dict[str, int] = {}  # 内容ハッシュの出現カウンタ（同文再発言の識別用）
         for i, m in enumerate(obj.get("messages") or []):
             role = "user" if str(m.get("role")).lower() in ("user", "human") else "assistant"

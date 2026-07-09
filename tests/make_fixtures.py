@@ -58,7 +58,8 @@ def claude_code():
     add("assistant", message={"role": "assistant", "content": [
         {"type": "text", "text": "原因はbubbleスキーマの差分。richTextへのフォールバックを追加する修正で解決した。TODO: bubbleId新形式のフィクスチャ追加。"}]})
     add("summary", summary="収集器の設計方針を確定（決定論・スナップショット読み）", leafUuid="u007")
-    (d / f"{sess}.jsonl").write_text("\n".join(L) + "\n")
+    # encoding必須: OS既定(cp932等)だとUTF-8前提のアダプタが全行quarantine行きになる
+    (d / f"{sess}.jsonl").write_text("\n".join(L) + "\n", encoding="utf-8")
 
 
 def cursor():
@@ -88,7 +89,8 @@ def codex():
          "content": [{"type": "output_text", "text": "rollout形式はJSONL追記なのでオフセットカーソルで増分取込できる。"}]},
         {"unknown_shape": {"v": 2}},  # 未知行 → イベント0件でrawのみ
     ]
-    (d / "rollout-2026-07-06-demo.jsonl").write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in L) + "\n")
+    (d / "rollout-2026-07-06-demo.jsonl").write_text(
+        "\n".join(json.dumps(x, ensure_ascii=False) for x in L) + "\n", encoding="utf-8")
 
 
 def aider():
@@ -97,7 +99,8 @@ def aider():
     (d / ".aider.chat.history.md").write_text(
         "# aider chat started at 2026-07-05 21:00:00\n\n"
         "#### aiderの履歴もtamoの対象にしたい\n\n"
-        "了解。`.aider.chat.history.md` は追記型Markdownなのでオフセット増分で読める。\n"
+        "了解。`.aider.chat.history.md` は追記型Markdownなのでオフセット増分で読める。\n",
+        encoding="utf-8",
     )
 
 
@@ -114,7 +117,7 @@ def inbox():
             {"role": "assistant", "text": "MV3拡張からlocalhostのinboxへPOSTすればよい。", "ts": "2026-07-06T12:00:10Z"},
         ],
     }
-    (d / "demo.json").write_text(json.dumps(body, ensure_ascii=False))
+    (d / "demo.json").write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
 
 
 if __name__ == "__main__":

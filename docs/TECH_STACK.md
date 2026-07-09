@@ -29,7 +29,7 @@
 ```
 [ソース]                          [tamo コア]                        [消費側]
 Claude Code transcript(JSONL) ─┐  probe.py    実機走査・自動設定
-Cursor state.vscdb ────────────┤  adapters/   増分・冪等・寛容パース   ┌ mcp_server.py (6ツール)
+Cursor state.vscdb ────────────┤  adapters/   増分・冪等・寛容パース   ┌ mcp_server.py (8ツール)
 Codex CLI rollout(JSONL) ──────┼→ schema.py   CES v1 正規化        ──┼ cli.py pack (Markdown)
 aider history.md ──────────────┤  cas.py      blob吸出し+参照置換     └ cli.py export (NDJSON)
 ブラウザ拡張 → http_inbox.py ──┘  textract.py 添付テキスト抽出
@@ -235,7 +235,8 @@ OOXML(docx/xlsx/pptx)の実体は「ZIP+XML」なので、`zipfile`+正規表現
 ## 10. 配布層 — CLI / HTTP inbox / MCP / export
 
 **CLI**（`tamo/cli.py`, argparse）: `probe / collect / watch / stats / sessions / search /
-pack / export / reindex-blobs / mirror / rules / run / hook / ingest-hook` の14サブコマンド。
+pack / export / reindex-blobs / mirror / rules / run / serve / mcp / prune / purge /
+quarantine / recall / show / token / hook / ingest-hook` の22サブコマンド。
 `mirror`（git向けMarkdownミラー, `tamo/derive.py`）と `rules`（導出ルールのマーカー冪等書込）、
 `run`（エージェント実行ラッパー）はSpecStory競合調査後に採り入れた還流系。
 `serve` は収集スレッド + HTTP inbox + MCP(streamable-http, FastMCP/uvicorn) + 日次自動pruneを
@@ -247,14 +248,20 @@ pack / export / reindex-blobs / mirror / rules / run / hook / ingest-hook` の14
 `ingest-hook` がstdinの `transcript_path` を受けて**そのファイルだけ**即時増分取込（`async: true`で本体を塞がない）。
 
 **HTTP inbox**（`tamo/http_inbox.py`, stdlibの`http.server`）:
-- `127.0.0.1` バインドのみ（LAN非公開）+ `X-Tamo-Token`（`~/.tamo/inbox.token` 初回自動生成, `secrets`）
-- 認証OK=204 / トークン不一致=403 / 非JSON=400 / 上限50MB
+- `127.0.0.1` バインドのみ（LAN非公開）+ `X-Tamo-Token`（`~/.tamo/inbox.token` 初回自動生成, `secrets`）。
+  照合は `secrets.compare_digest`（タイミングセーフ）。`/health` はトークンが付いてきた時だけ検査
+  （拡張の「接続確認」が認可までテストできる）
+- 認証OK=204 / トークン不一致=403(対処ガイド付き本文) / 非JSON=400 / 上限50MB
 - サーバは**検証してファイルに書くだけ**。パースは通常のinboxアダプタに一本化 —
   ネットワークから直接パーサに触らせない（攻撃面の最小化）
 
-**MCP**（`tamo/mcp_server.py`, FastMCP/stdio, 任意extras）: 6ツール
-`search_context / get_context_pack / list_sessions / get_session / get_blob_text / get_blob_base64`。
-登録は `claude mcp add tamo -- python -m tamo.mcp_server`（Cursor/Codex CLIも同じstdioコマンド）。
+**MCP**（`tamo/mcp_server.py`, FastMCP, 任意extras）: 8ツール
+`recall（最初にこれ） / search_context / get_context / get_context_pack / list_sessions /
+get_session / get_blob_text / get_blob_base64`。
+登録は stdio が `claude mcp add tamo -- python -m tamo.mcp_server`（Cursor/Codex CLIも同じ）、
+HTTP(streamable-http, `tamo serve`)が `--header "X-Tamo-Token: $(tamo token)"` 付き。
+**HTTPは`_TokenGate`(ASGIラッパ)でトークン必須** — 書込(inbox)だけ認証して読出(全会話+blob)が
+素通しという非対称を避ける。stdioはクライアント子プロセス=本人なので不要。
 `get_blob_text` は添付の抽出テキスト（base64より軽い）、`get_blob_base64` は原物。
 
 **export**: 1行=1セッションの NDJSON（`tamo.session.v1`）。`--include-raw` で
@@ -317,7 +324,7 @@ background.js(Service Worker) ──POST──> http://127.0.0.1:8787/inbox
 | pack | 5ソース18イベント → 1285トークン、全行⟨e:xxxx⟩付き |
 | 性能(10万イベント/195MB, tests/bench.py) | 取込8,000件/s / FTS検索0.04〜16ms / tail取得0.1ms / 続き取得4ms / MCP get_session(compact) 3ms / pack(5,000ev) 0.42s |
 | HTTP inbox | 204(正token) / 403(偽) / 400(非JSON) → 取込確認 |
-| MCP | 6ツールの直接呼出し + list_tools登録確認 |
+| MCP | 8ツールの直接呼出し + list_tools登録確認 |
 | 拡張 | 全JS `node --check` PASS / manifest妥当 / 契約テスト（添付テキスト"JIS Z 3183"検索HIT・未取得ノート保全） |
 
 ## 14. 壊れたらどこを直すか（早見表）

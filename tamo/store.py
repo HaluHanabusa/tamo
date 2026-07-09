@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS quarantine(
 );
 """
 
+# DBスキーマ版数（PRAGMA user_version）。列追加・制約変更をしたら+1して
+# _migrate() に該当版からのALTER手順を足す。CREATE IF NOT EXISTSは既存テーブルの
+# 列追加に効かないため、版数台帳が無いと旧DBがアップグレードで壊れる。
+SCHEMA_VERSION = 1
+
 
 class Store:
     def __init__(self, home: Path):
@@ -76,8 +81,28 @@ class Store:
         self.con.execute("PRAGMA synchronous=NORMAL")  # WAL併用時の定石(電源断でも整合、fsync半減)
         self.con.execute("PRAGMA busy_timeout=5000")   # serve(書込)とMCP(読取)の同時アクセスで即failしない
         self.con.executescript(_SCHEMA)
+        self._check_schema_version()
         self.cas = CAS(self.home / "cas")
         self.fts = self._init_fts()
+
+    def _check_schema_version(self) -> None:
+        ver = self.con.execute("PRAGMA user_version").fetchone()[0]
+        if ver > SCHEMA_VERSION:
+            self.con.close()
+            raise RuntimeError(
+                f"このDB({self.db_path})は新しいtamo(schema v{ver})で作られています。"
+                f"tamoを更新してください（このtamoは v{SCHEMA_VERSION} まで）"
+            )
+        if ver < SCHEMA_VERSION:
+            self._migrate(ver)
+
+    def _migrate(self, from_version: int) -> None:
+        """旧版DBを現行スキーマへ引き上げる版数台帳。
+        v0: 版数導入前。テーブル定義は現行v1と同一のため版数刻印のみ。
+        以降の例: if from_version < 2: self.con.execute("ALTER TABLE events ADD COLUMN ...")
+        """
+        self.con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        self.con.commit()
 
     def _init_fts(self) -> bool:
         try:
@@ -106,10 +131,45 @@ class Store:
         return row[0], False
 
     def put_quarantine(self, source_kind: str, locator: str, payload: bytes, error: str) -> None:
+        # --rescan のたびに同じ壊れ行が積み上がらないよう、同一locator+errorは1件に抑える
+        row = self.con.execute(
+            "SELECT 1 FROM quarantine WHERE locator=? AND error=? LIMIT 1", (locator, error)
+        ).fetchone()
+        if row:
+            return
         self.con.execute(
             "INSERT INTO quarantine(source_kind, locator, payload, error, ts) VALUES(?,?,?,?,?)",
             (source_kind, locator, payload, error, now_iso()),
         )
+
+    def quarantine_list(self, limit: int = 20, source: str | None = None) -> list[dict]:
+        cond, params = "", []
+        if source and source.strip():
+            cond, params = " WHERE source_kind LIKE ?", [f"%{source.strip().lower()}%"]
+        rows = self.con.execute(
+            f"SELECT id, ts, source_kind, locator, error, LENGTH(payload) FROM quarantine{cond}"
+            f" ORDER BY id DESC LIMIT ?", [*params, limit],
+        ).fetchall()
+        keys = ["id", "ts", "source_kind", "locator", "error", "payload_bytes"]
+        return [dict(zip(keys, r)) for r in rows]
+
+    def quarantine_get(self, qid: int) -> dict | None:
+        row = self.con.execute(
+            "SELECT id, ts, source_kind, locator, error, payload FROM quarantine WHERE id=?", (qid,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": row[0], "ts": row[1], "source_kind": row[2], "locator": row[3],
+                "error": row[4], "payload": (row[5] or b"").decode("utf-8", "replace")}
+
+    def quarantine_clear(self, source: str | None = None) -> int:
+        if source and source.strip():
+            cur = self.con.execute(
+                "DELETE FROM quarantine WHERE source_kind LIKE ?", (f"%{source.strip().lower()}%",))
+        else:
+            cur = self.con.execute("DELETE FROM quarantine")
+        self.commit()
+        return cur.rowcount
 
     # --------------------------------------------------------------- events
     def upsert_event(self, ev: dict, raw_id: int | None = None) -> bool:
@@ -417,11 +477,18 @@ class Store:
             rows = self.con.execute("SELECT ces FROM events ORDER BY ts, seq LIMIT ?", (limit,)).fetchall()
         return [json.loads(r[0]) for r in rows]
 
-    def list_sessions(self, limit: int = 30) -> list[dict]:
-        rows = self.con.execute(
-            "SELECT session_key, source_kind, first_ts, last_ts, n_events, title FROM sessions ORDER BY last_ts DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+    def list_sessions(self, limit: int = 30, source: str | None = None) -> list[dict]:
+        if source and source.strip():  # search/recallと同じ部分一致（"gemini"→gemini_web）
+            rows = self.con.execute(
+                "SELECT session_key, source_kind, first_ts, last_ts, n_events, title FROM sessions"
+                " WHERE source_kind LIKE ? ORDER BY last_ts DESC LIMIT ?",
+                (f"%{source.strip().lower()}%", limit),
+            ).fetchall()
+        else:
+            rows = self.con.execute(
+                "SELECT session_key, source_kind, first_ts, last_ts, n_events, title FROM sessions ORDER BY last_ts DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
         keys = ["session_key", "source_kind", "first_ts", "last_ts", "n_events", "title"]
         return [dict(zip(keys, r)) for r in rows]
 

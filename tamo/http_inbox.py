@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +19,11 @@ from .config import inbox_token
 from .util import sha8, tamo_home
 
 _MAX_BODY = 50 * 1024 * 1024  # 50MB（添付b64込み）
+
+
+def token_ok(supplied: str | None, expected: str) -> bool:
+    """タイミングセーフなトークン照合（`!=` はレスポンス時間で桁数が漏れる）。"""
+    return secrets.compare_digest((supplied or "").encode(), expected.encode())
 
 
 def make_server(port: int = 8787) -> ThreadingHTTPServer:
@@ -36,13 +42,18 @@ def make_server(port: int = 8787) -> ThreadingHTTPServer:
 
         def do_GET(self):
             if self.path == "/health":
+                # トークンが「付いてきた場合だけ」検証する: 拡張の接続確認が
+                # 到達性だけでなく認可までテストできるように（未指定は従来通り200）
+                tok = self.headers.get("X-Tamo-Token")
+                if tok is not None and not token_ok(tok, inbox_token()):
+                    return self._deny(403, "bad token: `tamo token` の値と拡張のトークン設定を一致させるか、拡張の「再ペアリング」を押してください")
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"ok")
             elif self.path.startswith("/recall"):
                 # ブラウザ拡張の「文脈を取ってコピー」用。トークン必須(投函と同じ認可)
-                if self.headers.get("X-Tamo-Token") != inbox_token():
-                    return self._deny(403, "bad token")
+                if not token_ok(self.headers.get("X-Tamo-Token"), inbox_token()):
+                    return self._deny(403, "bad token: 拡張の「再ペアリング」で解消できます")
                 from urllib.parse import parse_qs, urlparse
 
                 qs = parse_qs(urlparse(self.path).query)
@@ -82,8 +93,8 @@ def make_server(port: int = 8787) -> ThreadingHTTPServer:
         def do_POST(self):
             if self.path != "/inbox":
                 return self._deny(404, "not found")
-            if self.headers.get("X-Tamo-Token") != token:
-                return self._deny(403, "bad token")
+            if not token_ok(self.headers.get("X-Tamo-Token"), token):
+                return self._deny(403, "bad token: トークン不一致です。拡張の「再ペアリング」を押すか、`tamo token` の値を設定に貼ってください")
             length = int(self.headers.get("Content-Length") or 0)
             if not (0 < length <= _MAX_BODY):
                 return self._deny(413, "bad length")

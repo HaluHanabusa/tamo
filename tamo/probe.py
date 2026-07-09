@@ -34,15 +34,17 @@ def _win_users() -> list[Path]:
 def _inspect_vscdb(db: Path) -> dict:
     info: dict = {"path": str(db), "tables": [], "key_prefixes": {}}
     try:
-        snap = snapshot_sqlite(db)
-        con = sqlite3.connect(snap)
-        info["tables"] = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-        if "cursorDiskKV" in info["tables"]:
-            c = Counter()
-            for (k,) in con.execute("SELECT key FROM cursorDiskKV LIMIT 20000"):
-                c[str(k).split(":", 1)[0]] += 1
-            info["key_prefixes"] = dict(c.most_common(8))
-        con.close()
+        with snapshot_sqlite(db) as snap:
+            con = sqlite3.connect(snap)
+            try:
+                info["tables"] = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+                if "cursorDiskKV" in info["tables"]:
+                    c = Counter()
+                    for (k,) in con.execute("SELECT key FROM cursorDiskKV LIMIT 20000"):
+                        c[str(k).split(":", 1)[0]] += 1
+                    info["key_prefixes"] = dict(c.most_common(8))
+            finally:
+                con.close()
     except Exception as e:  # noqa: BLE001
         info["error"] = str(e)
     return info

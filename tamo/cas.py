@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import os
 import re
 from pathlib import Path
 
@@ -98,8 +99,16 @@ class CAS:
         sha = sha256_bytes(data)
         ext, mime2 = sniff(data, mime)
         p = self.path_for(sha, ext)
-        if not p.exists():
-            p.write_bytes(data)
+        # サイズ不一致は過去のクラッシュ書きかけ → 信用せず書き直す（存在チェックだけだと永久に破損が残る）
+        try:
+            intact = p.stat().st_size == len(data)
+        except OSError:
+            intact = False
+        if not intact:
+            # temp+rename でアトミック化: 電源断でも「無い」か「完全」かの二択にする
+            tmp = p.with_name(f"{p.name}.tmp{os.getpid()}")
+            tmp.write_bytes(data)
+            os.replace(tmp, p)
         meta = {
             "sha256": sha,
             "mime": mime2,

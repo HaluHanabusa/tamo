@@ -33,6 +33,11 @@
     }
     btn.disabled = true;
     btn.textContent = "…";
+    // 自動スクロール中は n/25 の進捗を出す（長い会話で十数秒黙るとフリーズに見える）
+    window.__tamo.onScrollStep = (i, max) => {
+      btn.textContent = String(i);
+      btn.title = `過去分を読み込み中 ${i}/${max}`;
+    };
     try {
       const res = await window.__tamoRun();
       if (!res.ok) return toast(host, `抽出失敗: ${res.error}`, false);
@@ -40,15 +45,18 @@
       const nAtt = p.messages.reduce((n, m) => n + (m.attachments || []).length, 0);
       const post = await chrome.runtime.sendMessage({ type: "tamo.post", payload: p });
       if (post.ok) {
-        toast(host, `tamoに投函 ✓ ${res.adapter}${res.warn ? "(fallback)" : ""} msg=${p.messages.length} att=${nAtt}`, true);
+        const trunc = p.note && p.note.includes("[上限切詰め]") ? " ⚠一部切詰め" : "";
+        toast(host, `tamoに投函 ✓ ${res.adapter}${res.warn ? "(fallback)" : ""} msg=${p.messages.length} att=${nAtt}${trunc}`, true);
       } else {
         toast(host, `投函失敗: ${post.error || "HTTP " + post.status}`, false);
       }
     } catch (e) {
       toast(host, `エラー: ${e.message}`, false);
     } finally {
+      window.__tamo.onScrollStep = null;
       btn.disabled = false;
       btn.textContent = "🎣";
+      btn.title = "この会話をtamoに掬う";
     }
   }
 

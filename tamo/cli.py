@@ -30,52 +30,122 @@ def _reindex() -> dict:
 
 # ---------------------------------------------------------------- collect
 
+def _pid_alive(pid: int) -> bool:
+    """ロックの持ち主プロセスが生きているか。
+    Windowsでは os.kill(pid, 0) がTerminateProcess相当で相手を殺すため使えない。"""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.get_last_error() == 5  # ERROR_ACCESS_DENIED = 存在はする
+        try:
+            code = wintypes.DWORD()
+            if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return True  # 判定不能は安全側（生存扱い＝ロックを奪わない）
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            k32.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _acquire_lock(lock: Path):
+    """単一書込者ロック。PIDを記録し、持ち主が死んでいる残留ロックは自動回収する
+    （クラッシュ後に全collectが永久に「別のtamoが実行中」で詰まる事故の防止）。"""
+    for _ in range(3):
+        try:
+            fd = lock.open("x")
+        except FileExistsError:
+            try:
+                pid = int(lock.read_text(encoding="utf-8").strip() or "0")
+            except (OSError, ValueError):
+                pid = 0
+            if pid and _pid_alive(pid):
+                print(f"別のtamoが実行中です (PID {pid})。serve/watch常駐中なら手動collectは不要です。\n"
+                      f"  そのPIDが本当に存在しないのにこの表示が続く場合は {lock} を削除してください",
+                      file=sys.stderr)
+                sys.exit(2)
+            print(f"[tamo] 残留ロックを回収しました（PID {pid or '?'} は動いていません）: {lock}",
+                  file=sys.stderr)
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+            continue
+        try:
+            fd.write(str(os.getpid()))
+            fd.flush()
+        except OSError:
+            pass
+        return fd
+    print(f"ロックを取得できません: {lock}（tamoが動いていなければ削除して再実行してください）", file=sys.stderr)
+    sys.exit(2)
+
+
 def do_collect(rescan: list[str] | None = None, only: list[str] | None = None, quiet: bool = False) -> dict:
     adapters.load_all()
-    store = _store()
     lock = tamo_home() / ".lock"
-    try:
-        fd = lock.open("x")
-    except FileExistsError:
-        print(f"別のtamoが実行中のようです（{lock} を確認）", file=sys.stderr)
-        sys.exit(2)
+    fd = _acquire_lock(lock)  # storeより先に取る（取得失敗時に接続をリークしない）
     totals = {"raw_new": 0, "events_new": 0, "quarantined": 0}
     try:
-        for cfg in load_sources():
-            kind = cfg.get("kind")
-            if only and kind not in only and cfg.get("key") not in only:
-                continue
-            cls = adapters.REGISTRY.get(kind)
-            if not cls:
-                print(f"  ! 未知のkind: {kind}（スキップ）", file=sys.stderr)
-                continue
-            ad = cls(cfg)
-            cursor = {} if (rescan and (kind in rescan or ad.key in rescan)) else store.get_cursor(ad.key)
-            t0 = time.time()
-            new_cursor, items = ad.collect(cursor)
-            n_raw = n_ev = n_q = 0
-            for it in items:
-                if it["error"] is not None:
-                    store.put_quarantine(kind, it["locator"], it["payload"], it["error"])
-                    n_q += 1
+        store = _store()
+        try:
+            for cfg in load_sources():
+                kind = cfg.get("kind")
+                if only and kind not in only and cfg.get("key") not in only:
                     continue
-                raw_id, created = store.put_raw(kind, it["locator"], it["payload"])
-                if created:
-                    n_raw += 1
-                for ev in it["events"]:
-                    if store.upsert_event(ev, raw_id):
-                        n_ev += 1
-            store.set_cursor(ad.key, new_cursor)
-            store.commit()
-            totals["raw_new"] += n_raw
-            totals["events_new"] += n_ev
-            totals["quarantined"] += n_q
-            if not quiet:
-                print(f"  {ad.key:<24} raw+{n_raw:<5} events+{n_ev:<5} quarantine+{n_q:<3} ({time.time() - t0:.2f}s)")
+                cls = adapters.REGISTRY.get(kind)
+                if not cls:
+                    print(f"  ! 未知のkind: {kind}（スキップ）", file=sys.stderr)
+                    continue
+                ad = cls(cfg)
+                cursor = {} if (rescan and (kind in rescan or ad.key in rescan)) else store.get_cursor(ad.key)
+                t0 = time.time()
+                new_cursor, items = ad.collect(cursor)
+                n_raw = n_ev = n_q = 0
+                for it in items:
+                    if it["error"] is not None:
+                        store.put_quarantine(kind, it["locator"], it["payload"], it["error"])
+                        n_q += 1
+                        continue
+                    raw_id, created = store.put_raw(kind, it["locator"], it["payload"])
+                    if created:
+                        n_raw += 1
+                    for ev in it["events"]:
+                        if store.upsert_event(ev, raw_id):
+                            n_ev += 1
+                store.set_cursor(ad.key, new_cursor)
+                store.commit()
+                try:
+                    ad.finalize()  # 取り消せない後始末(inboxのdone移動等)はcommit成功後にだけ行う
+                except Exception as e:  # noqa: BLE001
+                    print(f"  ! finalize error ({ad.key}): {e}", file=sys.stderr)
+                totals["raw_new"] += n_raw
+                totals["events_new"] += n_ev
+                totals["quarantined"] += n_q
+                if not quiet:
+                    print(f"  {ad.key:<24} raw+{n_raw:<5} events+{n_ev:<5} quarantine+{n_q:<3} ({time.time() - t0:.2f}s)")
+        finally:
+            store.close()
     finally:
         fd.close()
         lock.unlink(missing_ok=True)
-        store.close()
     return totals
 
 
@@ -93,8 +163,25 @@ def cmd_probe(args):
             print(f"  ? {d['kind']:<14} {d['path']}\n      ヒント: {d['hint']}")
     toml = dump_sources_toml(res)
     if args.write:
-        sources_path().write_text(toml)
-        print(f"-> {sources_path()} に {len(res['sources'])} ソースを書き込みました")
+        sp = sources_path()
+        if sp.exists():  # 手編集済みの設定を黙って潰さない: 退避 + 変更点の提示
+            old = sp.read_text(encoding="utf-8", errors="replace")
+            if old != toml:
+                import difflib
+
+                bak = sp.with_name("sources.toml.bak")
+                bak.write_text(old, encoding="utf-8")
+                diff = list(difflib.unified_diff(old.splitlines(), toml.splitlines(),
+                                                 fromfile="sources.toml(旧)", tofile="sources.toml(新)",
+                                                 lineterm=""))
+                print(f"-- 既存の sources.toml を {bak.name} に退避しました。変更点:")
+                for line in diff[:40]:
+                    print("  " + line)
+                if len(diff) > 40:
+                    print(f"  … 他{len(diff) - 40}行")
+        # encoding必須: OS既定(cp932等)で書くと読取側tomllib(厳格UTF-8)が全collectを道連れにする
+        sp.write_text(toml, encoding="utf-8")
+        print(f"-> {sp} に {len(res['sources'])} ソースを書き込みました")
     else:
         print("-- sources.toml（--write で保存） --")
         print(toml)
@@ -103,22 +190,64 @@ def cmd_probe(args):
 def cmd_collect(args):
     t = do_collect(rescan=args.rescan, only=args.only)
     print(f"合計: raw+{t['raw_new']} events+{t['events_new']} quarantine+{t['quarantined']}")
+    if not sources_path().exists():
+        print("ヒント: ソースが未設定のためinboxだけを見ています。まず `tamo probe --write` で"
+              "環境を走査してください", file=sys.stderr)
+
+
+class _Heartbeat:
+    """常駐ループの生存表示。無イベントでも1時間に1行「生きて回っている」ことを報せる
+    （起動バナー後の完全沈黙だと、停止と平常が見分けられない）。"""
+
+    def __init__(self, every_sec: int = 3600):
+        self.every = every_sec
+        self.t0 = self.last = time.time()
+        self.raw = self.ev = self.cycles = 0
+
+    def tick(self, totals: dict | None) -> None:
+        self.cycles += 1
+        if totals:
+            self.raw += totals.get("raw_new", 0)
+            self.ev += totals.get("events_new", 0)
+        now = time.time()
+        if now - self.last >= self.every:
+            up_h = (now - self.t0) / 3600
+            print(f"[tamo] 稼働{up_h:.1f}h: 直近{self.every // 60}分 raw+{self.raw} "
+                  f"events+{self.ev} ({self.cycles}サイクル)", file=sys.stderr)
+            self.raw = self.ev = self.cycles = 0
+            self.last = now
+
+
+def _collect_cycle(quiet: bool = True) -> dict | None:
+    """serve/watchループの1収集サイクル。失敗してもデーモンは殺さないが、無言にもしない。"""
+    try:
+        return do_collect(quiet=quiet)
+    except SystemExit as e:
+        # do_collect内のsys.exit(2)系は自前でメッセージ済み。文字列コード(設定エラー等)はここで表示
+        if isinstance(e.code, str):
+            print(f"[tamo] collect中断: {e.code}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001  収集失敗でサービス全体は止めない
+        print(f"[tamo] collect error: {e}", file=sys.stderr)
+    return None
 
 
 def cmd_watch(args):
     if args.http:
         from .http_inbox import start_background
 
-        start_background(args.port)
+        try:
+            start_background(args.port)
+        except OSError as e:
+            print(f"HTTP inboxポート {args.port} を開けません（{e}）。\n"
+                  f"  別のtamo(serve/watch)が動いていませんか？ `--port <別番号>` で変更できます",
+                  file=sys.stderr)
+            sys.exit(2)
         print(f"HTTP inbox: http://127.0.0.1:{args.port}/inbox  (X-Tamo-Token: {inbox_token()})")
     if not args.once:
         print(f"{args.interval}s 間隔でポーリング収集します（WSL2の/mnt/c配下はinotifyが効かないためポーリングが正解）")
+    hb = _Heartbeat()
     while True:
-        totals = None
-        try:
-            totals = do_collect(quiet=True)
-        except SystemExit:
-            pass
+        totals = _collect_cycle(quiet=True)
         if totals and totals.get("events_new"):
             # 収集器は無人運転が前提: 新イベントがあれば導出ルールも自動再生成する
             # （決定論+出所ID+マーカー冪等なので人手レビューのゲートは置かない。HITLは下流OmniBrainの責務）
@@ -129,6 +258,7 @@ def cmd_watch(args):
             print(f"[tamo] prune error: {e}", file=sys.stderr)
         if args.once:
             break
+        hb.tick(totals)
         time.sleep(args.interval)
 
 
@@ -148,9 +278,14 @@ def cmd_sessions(args):
 
 def cmd_search(args):
     store = _store()
-    for r in store.search(args.query, args.limit, source=getattr(args, "source", None)):
-        print(f"[{r['ts'] or '-'}] {r['actor']:<9} {r['session_key']}\n    {r['snippet']}\n    e:{r['event_id']}")
+    hits = store.search(args.query, args.limit, source=getattr(args, "source", None))
     store.close()
+    if not hits:  # 無出力だと「0件」と「壊れた」の区別がつかない（recallの空表示と同じ扱いに）
+        print(f"(該当なし: {args.query!r} — 語を短くする・別の言い方を試す、"
+              f"または `tamo collect` で最新を取り込んでください)", file=sys.stderr)
+        return
+    for r in hits:
+        print(f"[{r['ts'] or '-'}] {r['actor']:<9} {r['session_key']}\n    {r['snippet']}\n    e:{r['event_id']}")
 
 
 def cmd_pack(args):
@@ -164,7 +299,8 @@ def cmd_pack(args):
     md, stats = build_pack(events, budget_tokens=args.budget, query=args.query or "", title=title)
     store.close()
     if args.out:
-        Path(args.out).write_text(md)
+        # encoding必須: packは ⟨e:xxxx⟩(U+27E8/9)を含むためcp932/cp1252では確定クラッシュする
+        Path(args.out).write_text(md, encoding="utf-8")
         print(f"-> {args.out} ({stats['used_tokens']}tok)", file=sys.stderr)
     else:
         print(md)
@@ -306,14 +442,14 @@ def _maybe_autoprune() -> None:
         return
     marker = tamo_home() / ".last_prune"
     today = date.today().isoformat()
-    if marker.exists() and marker.read_text().strip() == today:
+    if marker.exists() and marker.read_text(encoding="utf-8").strip() == today:
         return
     store = _store()
     try:
         r = store.prune(days)
     finally:
         store.close()
-    marker.write_text(today)
+    marker.write_text(today, encoding="utf-8")
     if r["events"] or r["raw_records"] or r["quarantine"]:
         print(f"[tamo] auto-prune(>{days}d): events-{r['events']} raw-{r['raw_records']} "
               f"quarantine-{r['quarantine']} blobs_gc-{r['blobs_gc']}", file=sys.stderr)
@@ -322,9 +458,18 @@ def _maybe_autoprune() -> None:
 def cmd_serve(args):
     """収集 + HTTP inbox + MCP(streamable-http) + 自動prune を1プロセスで動かす常駐サービス。
     OmniBrain等の下流が無くても、これ単体で「貯める・探す・渡す」が完結する。"""
+    import socket
     import threading
 
     from .config import ensure_settings_file, load_settings
+
+    # --- 起動前チェック: 失敗要因は成功バナーの前に潰す（バナー後のSystemExitで驚かせない） ---
+    try:
+        from . import mcp_server
+    except SystemExit:
+        print("serve にはMCP拡張が必要です: pip install 'mcp[cli]'\n"
+              "  （MCP無しで収集+ブラウザ投函だけなら `tamo watch --http` が使えます）", file=sys.stderr)
+        sys.exit(2)
 
     ensure_settings_file()
     s = load_settings()["serve"]
@@ -332,37 +477,53 @@ def cmd_serve(args):
     mcp_port = args.mcp_port or s["mcp_port"]
     inbox_port = args.inbox_port or s["inbox_port"]
 
+    def _port_free(port: int) -> bool:
+        sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sk.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+        finally:
+            sk.close()
+
+    if not _port_free(mcp_port):
+        print(f"MCPポート {mcp_port} は使用中です。既に tamo serve が動いていませんか？\n"
+              f"  変更するには: tamo serve --mcp-port <別番号>（settings.toml の [serve] mcp_port でも可）",
+              file=sys.stderr)
+        sys.exit(2)
+
+    tok = inbox_token()
     if not args.no_inbox:
         from .http_inbox import start_background
 
-        start_background(inbox_port)
-        print(f"inbox : http://127.0.0.1:{inbox_port}/inbox  (X-Tamo-Token: {inbox_token()})")
-    print(f"mcp   : http://127.0.0.1:{mcp_port}/mcp  (streamable-http)")
+        try:
+            start_background(inbox_port)
+        except OSError as e:
+            print(f"inboxポート {inbox_port} を開けません（{e}）。\n"
+                  f"  変更するには: tamo serve --inbox-port <別番号>（settings.toml でも可）", file=sys.stderr)
+            sys.exit(2)
+        print(f"inbox : http://127.0.0.1:{inbox_port}/inbox  (X-Tamo-Token: {tok})")
+    print(f"mcp   : http://127.0.0.1:{mcp_port}/mcp  (streamable-http, X-Tamo-Token認証)")
     print(f"collect: {interval}s間隔でポーリング（ソース側の自動削除より先に掬うのが仕事）")
     print("登録例:")
-    print(f"  claude mcp add --transport http tamo http://127.0.0.1:{mcp_port}/mcp")
+    print(f'  claude mcp add --transport http tamo http://127.0.0.1:{mcp_port}/mcp --header "X-Tamo-Token: {tok}"')
     print(f"  # stdio派: claude mcp add tamo -- tamo mcp")
 
     def loop() -> None:
+        hb = _Heartbeat()
         while True:
-            totals = None
-            try:
-                totals = do_collect(quiet=True)
-            except SystemExit:
-                pass
-            except Exception as e:  # noqa: BLE001  収集失敗でサービス全体は止めない
-                print(f"[tamo] collect error: {e}", file=sys.stderr)
+            totals = _collect_cycle(quiet=True)
             if totals and totals.get("events_new"):
                 _rules_refresh(args.rules, args.rules_project)
             try:
                 _maybe_autoprune()
             except Exception as e:  # noqa: BLE001
                 print(f"[tamo] prune error: {e}", file=sys.stderr)
+            hb.tick(totals)
             time.sleep(interval)
 
     threading.Thread(target=loop, daemon=True, name="tamo-collector").start()
-    from . import mcp_server
-
     mcp_server.run("streamable-http", "127.0.0.1", mcp_port)  # blocking
 
 
@@ -383,12 +544,59 @@ def cmd_prune(args):
         sys.exit(2)
     store = _store()
     try:
+        if not args.dry_run and not args.yes:
+            # purgeと同じ確認方針: 何がどれだけ消えるかを見せてから削除する
+            preview = store.prune(days, dry_run=True)
+            total = preview["events"] + preview["raw_records"] + preview["quarantine"]
+            if total:
+                print(json.dumps(preview, ensure_ascii=False, indent=2))
+                if not sys.stdin.isatty():
+                    print("削除を実行するには --yes を付けてください（非対話環境）", file=sys.stderr)
+                    sys.exit(2)
+                ans = input(f"{days}日より古い上記データを削除します。よろしいですか？ [y/N] ").strip().lower()
+                if ans not in ("y", "yes"):
+                    print("中止しました", file=sys.stderr)
+                    sys.exit(1)
         r = store.prune(days, dry_run=args.dry_run)
         if args.vacuum and not args.dry_run:
             store.con.execute("VACUUM")
     finally:
         store.close()
     print(json.dumps(r, ensure_ascii=False, indent=2))
+
+
+def cmd_quarantine(args):
+    """隔離データの閲覧/削除。増えていたらアダプタのドリフト兆候（probeのフィンガープリントを見る）。"""
+    store = _store()
+    try:
+        if args.action == "show":
+            if args.id is None:
+                print("usage: tamo quarantine show --id N", file=sys.stderr)
+                sys.exit(2)
+            q = store.quarantine_get(args.id)
+            if not q:
+                print(f"id={args.id} は見つかりません", file=sys.stderr)
+                sys.exit(1)
+            print(json.dumps(q, ensure_ascii=False, indent=2))
+        elif args.action == "clear":
+            if not args.yes:
+                print("隔離データを削除します（原文はここにしか残っていません）。実行するには --yes を付けてください。",
+                      file=sys.stderr)
+                sys.exit(2)
+            n = store.quarantine_clear(args.source)
+            print(f"cleared: {n}件")
+        else:  # list
+            rows = store.quarantine_list(args.limit, source=args.source)
+            if not rows:
+                print("隔離データはありません（全行パース成功）")
+                return
+            for r in rows:
+                err = (r["error"] or "").replace("\n", " ")
+                print(f"#{r['id']:<6} [{r['ts'] or '-'}] {r['source_kind'] or '-':<12} {r['locator']}")
+                print(f"        {err[:160]} ({r['payload_bytes'] or 0}B)")
+            print("-- 原文: tamo quarantine show --id N / 削除: tamo quarantine clear --yes")
+    finally:
+        store.close()
 
 
 def cmd_purge(args):
@@ -537,7 +745,21 @@ def cmd_ingest_hook(args):
     sys.exit(0)
 
 
+def _utf8_stdio() -> None:
+    """標準入出力をUTF-8・行バッファへ再構成する。
+    - UTF-8: Windowsのロケール既定(cp932/cp1252)のままだとリダイレクト/パイプ時
+      （`tamo pack > x.md` 等）に ⟨⟩🕒★📎 を含む出力がUnicodeEncodeErrorで確定クラッシュする
+    - 行バッファ: serve/watchのログをファイルへリダイレクトした際、バナーや心拍が
+      ブロックバッファに滞留して「何時間もログが空」に見えるのを防ぐ"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except Exception:  # noqa: BLE001  reconfigure不可な環境(テストの置換ストリーム等)はそのまま
+            pass
+
+
 def main(argv=None):
+    _utf8_stdio()
     ap = argparse.ArgumentParser(prog="tamo", description="tamo — AIエージェント横断のコンテキスト収集器（タモ網）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -627,8 +849,17 @@ def main(argv=None):
     p = sub.add_parser("prune", help="保持期間を超えた古いデータを削除（活動時刻基準・mtime不使用）")
     p.add_argument("--days", type=int, help="保持日数（省略時はsettings.tomlのretention.days）")
     p.add_argument("--dry-run", action="store_true", help="削除せず件数だけ表示")
+    p.add_argument("--yes", action="store_true", help="確認プロンプトを省略して削除（purgeと同じ方針）")
     p.add_argument("--vacuum", action="store_true", help="削除後にVACUUMでDBを詰める")
     p.set_defaults(fn=cmd_prune)
+
+    p = sub.add_parser("quarantine", help="パース不能で隔離した行の閲覧/削除（増加はアダプタのドリフト兆候）")
+    p.add_argument("action", nargs="?", choices=["list", "show", "clear"], default="list")
+    p.add_argument("--id", type=int, help="show対象のid")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--source", help="source_kindの部分一致で絞り込み")
+    p.add_argument("--yes", action="store_true", help="clearの確認を省略")
+    p.set_defaults(fn=cmd_quarantine)
 
     p = sub.add_parser("purge", help="全データ削除（DB/CAS/処理済みinbox）。設定とトークンは残す")
     p.add_argument("--yes", action="store_true", help="確認なしで実行")
@@ -672,6 +903,12 @@ def main(argv=None):
         except Exception:
             pass
         os._exit(0)
+    except Exception as e:  # noqa: BLE001  ユーザーに生トレースバックを見せない（DB破損等も1行+対処で伝える）
+        if os.environ.get("TAMO_DEBUG"):
+            raise
+        print(f"[tamo] エラー: {e}\n  （詳細なトレースバックは TAMO_DEBUG=1 を付けて再実行すると出ます）",
+              file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

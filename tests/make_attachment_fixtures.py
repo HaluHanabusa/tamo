@@ -76,5 +76,5 @@ if __name__ == "__main__":
              "text": "受領。docxの決定事項とxlsxのトルク実測を確認します。"},
         ],
     }
-    (inbox / "att_demo.json").write_text(json.dumps(body, ensure_ascii=False))
+    (inbox / "att_demo.json").write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
     print("posted att_demo.json (docx/xlsx/pdf)")

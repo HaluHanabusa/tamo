@@ -88,20 +88,31 @@
   function clipText(t) { return (t || "").slice(0, LIMITS.perMessageChars); }
 
   function buildPayload(source, session, title, messages) {
-    return {
+    const kept = messages.slice(-LIMITS.messages);
+    const dropped = messages.length - kept.length;
+    const clipped = kept.filter((m) => (m.text || "").length > LIMITS.perMessageChars).length;
+    const payload = {
       schema: "tamo.inbox.v1",
       source,
       session,
       title: title || document.title || null,
       captured_at: nowIso(),
       url: location.href,
-      messages: messages.slice(-LIMITS.messages).map((m) => ({
+      messages: kept.map((m) => ({
         role: m.role || "user",
         text: clipText(m.text),
         ts: m.ts || null,
         attachments: (m.attachments || []).filter(Boolean),
       })),
     };
+    if (dropped || clipped) {
+      // 黙って落とさない: 何をどれだけ切ったかをnoteに残す（tamo側はmetaイベントとして保全し、UIにも出る）
+      const parts = [];
+      if (dropped) parts.push(`古い${dropped}件を上限${LIMITS.messages}件で省略`);
+      if (clipped) parts.push(`${clipped}件を${LIMITS.perMessageChars}字で切詰め`);
+      payload.note = `[上限切詰め] ${parts.join(" / ")}`;
+    }
+    return payload;
   }
 
   // メッセージ要素内のメディアを柔軟に回収する:
@@ -149,6 +160,10 @@
     const origTop = sc.scrollTop;
     let last = -1, steps = 0;
     for (; steps < maxSteps; steps++) {
+      // 進捗フック（fab等が「n/25」を表示する。最大~17秒の無言フリーズに見せない）
+      if (typeof window.__tamo.onScrollStep === "function") {
+        try { window.__tamo.onScrollStep(steps + 1, maxSteps); } catch (_e) { /* 表示は本処理を妨げない */ }
+      }
       sc.scrollTop = 0;
       await new Promise((r) => setTimeout(r, settleMs));
       if (sc.scrollHeight === last) break;
@@ -173,5 +188,6 @@
     LIMITS, resetBudget, nowIso, textToB64, blobToB64, alive,
     fetchAsAttachment, textAttachment, kindJa, skippedNote, clipText,
     buildPayload, mediaFrom, imagesFrom, autoScrollLoad,
+    onScrollStep: null,  // (step, maxSteps) => void — 自動スクロール中の進捗表示用フック
   };
 })();

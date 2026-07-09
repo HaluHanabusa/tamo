@@ -52,35 +52,35 @@ class CursorAdapter(Adapter):
         last_rowid = int(cursor.get("rowid", 0))
         if not db.exists():
             return cursor, []
-        snap = snapshot_sqlite(db)
-        con = sqlite3.connect(snap)
-        con.text_factory = bytes
         items: list[dict] = []
         max_rowid = last_rowid
-        try:
-            tables = {r[0].decode() if isinstance(r[0], bytes) else r[0]
-                      for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if "cursorDiskKV" not in tables:
-                return cursor, [item(f"{db}::no-cursorDiskKV", b"", [], error=f"tables={sorted(tables)}")]
-            rows = con.execute(
-                "SELECT rowid, key, value FROM cursorDiskKV WHERE rowid > ? ORDER BY rowid", (last_rowid,)
-            )
-            for rowid, key_b, val_b in rows:
-                max_rowid = max(max_rowid, rowid)
-                key = key_b.decode("utf-8", "replace") if isinstance(key_b, bytes) else str(key_b)
-                if val_b is None:
-                    continue  # Cursorは削除済み/未確定のcomposerでNULL値を残す（実機で確認）。データが無いので保全対象も無い
-                raw = val_b if isinstance(val_b, bytes) else str(val_b).encode()
-                if not raw.strip():
-                    continue
-                locator = f"{db}::rowid={rowid}::{key}"
-                try:
-                    events = self._parse_kv(key, raw, rowid, locator)
-                    items.append(item(locator, raw, events))
-                except Exception as e:  # noqa: BLE001
-                    items.append(item(locator, raw, [], error=f"{key}: {e}"))
-        finally:
-            con.close()
+        with snapshot_sqlite(db) as snap:
+            con = sqlite3.connect(snap)
+            con.text_factory = bytes
+            try:
+                tables = {r[0].decode() if isinstance(r[0], bytes) else r[0]
+                          for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if "cursorDiskKV" not in tables:
+                    return cursor, [item(f"{db}::no-cursorDiskKV", b"", [], error=f"tables={sorted(tables)}")]
+                rows = con.execute(
+                    "SELECT rowid, key, value FROM cursorDiskKV WHERE rowid > ? ORDER BY rowid", (last_rowid,)
+                )
+                for rowid, key_b, val_b in rows:
+                    max_rowid = max(max_rowid, rowid)
+                    key = key_b.decode("utf-8", "replace") if isinstance(key_b, bytes) else str(key_b)
+                    if val_b is None:
+                        continue  # Cursorは削除済み/未確定のcomposerでNULL値を残す（実機で確認）。データが無いので保全対象も無い
+                    raw = val_b if isinstance(val_b, bytes) else str(val_b).encode()
+                    if not raw.strip():
+                        continue
+                    locator = f"{db}::rowid={rowid}::{key}"
+                    try:
+                        events = self._parse_kv(key, raw, rowid, locator)
+                        items.append(item(locator, raw, events))
+                    except Exception as e:  # noqa: BLE001
+                        items.append(item(locator, raw, [], error=f"{key}: {e}"))
+            finally:
+                con.close()
         return {"rowid": max_rowid}, items
 
     def _parse_kv(self, key: str, raw: bytes, rowid: int, locator: str) -> list[dict]:

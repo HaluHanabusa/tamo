@@ -8,6 +8,13 @@ async function settings() {
   return d;
 }
 
+// サーバのエラー本文（"bad token: 再ペアリングで解消…" 等の対処ガイド）を捨てずに届ける
+async function errorDetail(res) {
+  let body = "";
+  try { body = (await res.text()).trim().slice(0, 300); } catch (_e) { /* 本文なし */ }
+  return `HTTP ${res.status}${body ? ` — ${body}` : ""}`;
+}
+
 async function pair() {
   const { port } = await settings();
   try {
@@ -32,17 +39,22 @@ async function postInbox(payload) {
       headers: { "Content-Type": "application/json", "X-Tamo-Token": token },
       body: JSON.stringify(payload),
     });
-    return { ok: res.status === 204, status: res.status };
+    if (res.status === 204) return { ok: true, status: 204 };
+    return { ok: false, status: res.status, error: await errorDetail(res) };
   } catch (e) {
-    return { ok: false, error: `tamoに接続できません: ${e.message}（tamo watch --http は起動していますか）` };
+    return { ok: false, error: `tamoに接続できません: ${e.message}（tamo serve は起動していますか）` };
   }
 }
 
 async function health() {
-  const { port } = await settings();
+  const { port, token } = await settings();
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/health`);
-    return { ok: res.ok, status: res.status };
+    // トークンを持っていれば一緒に送って認可まで確認する
+    // （到達性だけの確認だと、トークン不一致でも「接続OK」と出て直後の投函403で裏切られる）
+    const res = await fetch(`http://127.0.0.1:${port}/health`,
+      token ? { headers: { "X-Tamo-Token": token } } : {});
+    if (res.ok) return { ok: true, status: res.status };
+    return { ok: false, status: res.status, tokenBad: res.status === 403, error: await errorDetail(res) };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -66,12 +78,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const { port } = await settings();
       let { token } = await settings();
       if (!token) token = await pair();
-      if (!token) return sendResponse({ ok: false, error: "ペアリング未完了（tamo serve 起動中に開き直してください）" });
+      if (!token) return sendResponse({ ok: false, error: "ペアリング未完了（tamo serve 起動中に「再ペアリング」を押してください）" });
       try {
         const src = msg.source ? `&source=${encodeURIComponent(msg.source)}` : "";
         const res = await fetch(`http://127.0.0.1:${port}/recall?q=${encodeURIComponent(msg.query)}${src}`,
           { headers: { "X-Tamo-Token": token } });
-        if (!res.ok) return sendResponse({ ok: false, error: `HTTP ${res.status}` });
+        if (!res.ok) return sendResponse({ ok: false, error: await errorDetail(res) });
         sendResponse({ ok: true, text: await res.text() });
       } catch (e) {
         sendResponse({ ok: false, error: e.message });

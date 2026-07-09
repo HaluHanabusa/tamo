@@ -12,13 +12,14 @@
   .row { display: flex; gap: 6px; }
 </style>
 <h1>tamo scoop 🎣</h1>
-<label>tamo ポート（tamo watch --http）</label>
+<label>tamo ポート（`tamo serve` の inbox、既定 8787）</label>
 <input id="port" type="number" value="8787" />
-<label>トークン（~/.tamo/inbox.token の中身）</label>
-<input id="token" type="password" placeholder="貼り付けて保存" />
+<label>トークン（通常は自動設定。手動なら `tamo token` の値）</label>
+<input id="token" type="password" placeholder="再ペアリングで自動取得" />
 <div class="row">
   <button id="save">保存</button>
   <button id="health">接続確認</button>
+  <button id="pair">再ペアリング</button>
 </div>
 <button id="scoop">この会話を掬う</button>
 <label>過去文脈の検索（結果をコピー → AIに貼る）</label>

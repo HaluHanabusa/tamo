@@ -63,9 +63,11 @@ tamo serve
 **2-2. Claude Code に登録**（元のターミナル）:
 
 ```bash
-claude mcp add --transport http tamo http://127.0.0.1:8788/mcp
+claude mcp add --transport http tamo http://127.0.0.1:8788/mcp --header "X-Tamo-Token: $(tamo token)"
 tamo hook   # 出力の CLAUDE.md スニペットを対象プロジェクトの CLAUDE.md に貼る(推奨)
 ```
+
+> HTTPはトークン認証（serve起動バナーにコピペ可能な登録例が出ます）。ヘッダ無しは401になります。
 
 **2-3. Claude Code 内から呼ぶ**: 新しいセッションで次を順に発言:
 

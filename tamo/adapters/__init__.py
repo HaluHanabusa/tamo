@@ -19,6 +19,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -35,6 +36,10 @@ class Adapter:
     def collect(self, cursor: dict) -> tuple[dict, list[dict]]:  # pragma: no cover
         raise NotImplementedError
 
+    def finalize(self) -> None:
+        """DBコミット成功後に呼ばれる後始末。取り消せない副作用（inboxのdone移動等）は
+        collect内でなくここで行う — commit前に動かすとクラッシュ時にデータを失う。"""
+
 
 def item(locator: str, payload: bytes | str, events: list[dict], error: str | None = None) -> dict:
     if isinstance(payload, str):
@@ -42,26 +47,34 @@ def item(locator: str, payload: bytes | str, events: list[dict], error: str | No
     return {"locator": locator, "payload": payload, "events": events, "error": error}
 
 
-def snapshot_sqlite(src: Path) -> Path:
+@contextmanager
+def snapshot_sqlite(src: Path):
     """ライブなSQLite(WAL含む)を壊さず読むため、テンポラリへ丸ごとコピーして開く。
     Cursor/VS Code系はDBを開きっぱなしにするため、直接openはロック/破損リスクがある。
     WSL2から /mnt/c 越しに読む場合も、この方式なら9pのロック問題を踏まない。
+
+    withブロックで使う（exit時にコピーを必ず削除。serve常駐が60秒ごとに数百MBの
+    コピーを$TEMPへ置き去りにしないため）。接続はexit前に閉じること（Windowsは
+    開いているファイルを消せない — 消せなかった残骸はignore_errorsで黙って許容）。
     """
     tmpdir = Path(tempfile.mkdtemp(prefix="tamo_snap_"))
-    dst = tmpdir / src.name
-    shutil.copy2(src, dst)
-    for suffix in ("-wal", "-shm"):
-        side = Path(str(src) + suffix)
-        if side.exists():
-            shutil.copy2(side, Path(str(dst) + suffix))
-    # WALをメインDBへ取り込む
-    con = sqlite3.connect(dst)
     try:
-        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    except sqlite3.OperationalError:
-        pass
-    con.close()
-    return dst
+        dst = tmpdir / src.name
+        shutil.copy2(src, dst)
+        for suffix in ("-wal", "-shm"):
+            side = Path(str(src) + suffix)
+            if side.exists():
+                shutil.copy2(side, Path(str(dst) + suffix))
+        # WALをメインDBへ取り込む
+        con = sqlite3.connect(dst)
+        try:
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.OperationalError:
+            pass
+        con.close()
+        yield dst
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def fingerprint_json_keys(obj, depth: int = 2) -> list[str]:

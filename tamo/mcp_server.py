@@ -106,7 +106,9 @@ def get_context_pack(budget_tokens: int = 6000, query: str = "", session_key: st
 
 @mcp.tool()
 def list_sessions(limit: int = 20, source: str = "") -> str:
-    """収集済みセッションの一覧（新しい順）。"""
+    """収集済みセッションの一覧（新しい順）。
+    source はsource_kindの部分一致絞り込み（"gemini"→gemini_web / "claude_code" 等、
+    recall/search_contextと同じ意味）。空文字なら全ソース。"""
     s = _store()
     try:
         return json.dumps(s.list_sessions(limit, source=source or None), ensure_ascii=False, indent=1)
@@ -187,15 +189,62 @@ def get_blob_base64(sha256: str) -> str:
         s.close()
 
 
+class _TokenGate:
+    """streamable-http用の最小認証ASGIラッパ。
+
+    inboxの書込には最初からトークンが要るのに、収集した全会話+blob原物を返す
+    読出（このMCP）が素通しでは非対称すぎる — 127.0.0.1バインドは「LANに出さない」
+    であって「ローカルの任意プロセスを信用する」ではない。
+    受理: `X-Tamo-Token: <token>` または `Authorization: Bearer <token>`（inbox.tokenと同一）。
+    """
+
+    def __init__(self, app, token: str):
+        self.app, self._token = app, token.encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            import secrets
+
+            hdrs = {k.decode("latin-1").lower(): v.decode("latin-1")
+                    for k, v in scope.get("headers", [])}
+            supplied = hdrs.get("x-tamo-token", "")
+            auth = hdrs.get("authorization", "")
+            if not supplied and auth.lower().startswith("bearer "):
+                supplied = auth[7:].strip()
+            if not secrets.compare_digest(supplied.encode(), self._token):
+                body = ("unauthorized: X-Tamo-Token ヘッダ（`tamo token` の値）が必要です。"
+                        "登録例: claude mcp add --transport http tamo http://127.0.0.1:8788/mcp"
+                        " --header \"X-Tamo-Token: $(tamo token)\"").encode()
+                await send({"type": "http.response.start", "status": 401,
+                            "headers": [(b"content-type", b"text/plain; charset=utf-8"),
+                                        (b"content-length", str(len(body)).encode())]})
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
+
+
 def run(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8788) -> None:
     """MCPサーバを起動する。stdio(既定, クライアントが子プロセスとして起動)か、
-    streamable-http(常駐サービス`tamo serve`用: 1プロセスを複数クライアントで共有)。"""
+    streamable-http(常駐サービス`tamo serve`用: 1プロセスを複数クライアントで共有)。
+    httpはトークン必須（stdioはクライアント子プロセス=ユーザー本人なので不要）。"""
     if transport == "stdio":
         mcp.run()
         return
+    import sys
+
+    from .config import inbox_token
+
+    app_factory = getattr(mcp, "streamable_http_app", None)
+    if app_factory is None:
+        # 認証を差し込めない旧SDKで、全会話を無認証公開する方が害が大きい → 起動を拒否
+        raise SystemExit("mcp SDKが古くhttp認証を適用できません: pip install -U 'mcp[cli]'")
+    import uvicorn
+
     mcp.settings.host = host
     mcp.settings.port = port
-    mcp.run(transport="streamable-http")
+    print(f"[tamo] MCP: http://{host}:{port}/mcp （X-Tamo-Token 認証・値は `tamo token`）",
+          file=sys.stderr)
+    uvicorn.run(_TokenGate(app_factory(), inbox_token()), host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":

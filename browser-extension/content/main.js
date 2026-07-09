@@ -10,10 +10,10 @@
         const payload = await fn();
         return { ok: true, payload, adapter: location.hostname };
       } catch (e) {
-        // API形式ドリフト等 → genericへフォールバック（理由は残す）
+        // API形式ドリフト等 → genericへフォールバック（理由は残す。既存noteは潰さず追記）
         try {
           const payload = await sites.__generic();
-          payload.note = `site adapter failed: ${e.message}`;
+          payload.note = (payload.note ? payload.note + " / " : "") + `site adapter failed: ${e.message}`;
           return { ok: true, payload, adapter: "generic(fallback)", warn: e.message };
         } catch (e2) {
           return { ok: false, error: `${e.message} / generic: ${e2.message}` };
