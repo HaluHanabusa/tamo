@@ -5,6 +5,7 @@ import secrets
 import tomllib
 from pathlib import Path
 
+from .i18n import lang, t
 from .util import tamo_home
 
 
@@ -21,17 +22,17 @@ def load_sources() -> list[dict]:
             data = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
         # 生トレースバックにしない: 行番号付きの原因と直し方を1画面で伝える
-        raise SystemExit(
-            f"sources.toml の書式エラー: {e}\n"
-            f"  ファイル: {p}\n"
-            f"  手で直すか、`tamo probe --write` で再生成できます（既存は .bak に退避されます）"
-        ) from e
+        raise SystemExit(t(
+            "sources.toml の書式エラー: {err}\n"
+            "  ファイル: {path}\n"
+            "  手で直すか、`tamo probe --write` で再生成できます（既存は .bak に退避されます）",
+            err=e, path=p)) from e
     except UnicodeDecodeError as e:
-        raise SystemExit(
-            f"sources.toml がUTF-8で読めません（旧tamoがOS既定エンコーディングで書いた可能性）: {e}\n"
-            f"  ファイル: {p}\n"
-            f"  `tamo probe --write` で再生成してください（既存は .bak に退避されます）"
-        ) from e
+        raise SystemExit(t(
+            "sources.toml がUTF-8で読めません（旧tamoがOS既定エンコーディングで書いた可能性）: {err}\n"
+            "  ファイル: {path}\n"
+            "  `tamo probe --write` で再生成してください（既存は .bak に退避されます）",
+            err=e, path=p)) from e
     return [s for s in data.get("source", []) if s.get("enabled", True)]
 
 
@@ -78,6 +79,33 @@ inbox_port = 8787  # ブラウザ拡張の投函口
 mcp_port = 8788    # MCP (streamable-http) ポート
 """
 
+# 文書型の定数はt()辞書でなく言語別定数で持つ（cli.pyのフックスニペットと同じ方針）
+_SETTINGS_TEMPLATE_EN = """\
+# tamo settings — non-functional requirements
+# If this file is absent, defaults apply.
+
+[retention]
+# Retention period in days. 0 = unlimited (default).
+# tamo is the receptacle that outlives the sources (e.g. Claude Code deletes its
+# transcripts after 30 days by default), so nothing is deleted by default.
+# With N>0, the daily auto-prune of `tamo prune` / `tamo serve` deletes data older
+# than N days, judged by **event activity time** (file mtime is never used).
+# Note: unlike Claude Code, 0 means "never delete" — it does not stop collection.
+# On work machines we recommend matching your data-retention policy (e.g. days = 90)
+# — see the retention-risk section in docs/ARCHITECTURE.md.
+days = 0
+
+# When total disk usage (DB + attachment CAS) exceeds this many MB, serve/watch/stats
+# warn once a day. 0 = no warning. The guardrail that keeps the unlimited default
+# from growing silently.
+warn_db_mb = 2048
+
+[serve]
+interval = 60      # collection polling interval (seconds)
+inbox_port = 8787  # browser-extension inbox
+mcp_port = 8788    # MCP (streamable-http) port
+"""
+
 
 def settings_path() -> Path:
     return tamo_home() / "settings.toml"
@@ -86,7 +114,8 @@ def settings_path() -> Path:
 def ensure_settings_file() -> Path:
     p = settings_path()
     if not p.exists():
-        p.write_text(_SETTINGS_TEMPLATE, encoding="utf-8")
+        # コメントを表示言語で生成（設定キー自体は言語非依存）
+        p.write_text(_SETTINGS_TEMPLATE if lang() == "ja" else _SETTINGS_TEMPLATE_EN, encoding="utf-8")
     return p
 
 
@@ -106,8 +135,8 @@ def load_settings() -> dict:
                     s.setdefault(sect, {}).update(vals)
         except Exception as e:  # noqa: BLE001  壊れた設定ファイルでも既定値で動き続ける
             # ただし無言にはしない — typoした設定が効いていないことに気づけるように
-            print(f"[tamo] settings.toml が読めません（既定値で続行）: {e}\n"
-                  f"  ファイル: {p}", file=sys.stderr)
+            print(t("[tamo] settings.toml が読めません（既定値で続行）: {err}\n  ファイル: {path}",
+                    err=e, path=p), file=sys.stderr)
     env = os.environ.get("TAMO_RETENTION_DAYS")
     if env and env.isdigit():
         s["retention"]["days"] = int(env)

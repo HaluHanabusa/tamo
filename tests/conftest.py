@@ -17,6 +17,14 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 
+@pytest.fixture(autouse=True)
+def _ja_messages(monkeypatch):
+    """表示言語をjaに固定する（既存テストは日本語メッセージを前提に書かれている。
+    CI(enロケール)でも同じアサーションが通るように）。英語出力の検証は
+    tests/test_i18n.py が TAMO_LANG=en を明示して行う。"""
+    monkeypatch.setenv("TAMO_LANG", "ja")
+
+
 @pytest.fixture()
 def tamo_home(tmp_path, monkeypatch) -> Path:
     """空のTAMO_HOMEを用意して環境変数を向ける。"""

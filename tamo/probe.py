@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 from .adapters import snapshot_sqlite
+from .i18n import t
 
 
 def _win_users() -> list[Path]:
@@ -59,13 +60,14 @@ def run_probe(home: Path, extra_scan: list[Path] | None = None) -> dict:
     notes: list[str] = []
     wins = _win_users()
     if wins:
-        notes.append(f"WSL2/Windows境界を検出: Windowsユーザー {', '.join(p.name for p in wins)} 側も走査します")
+        notes.append(t("WSL2/Windows境界を検出: Windowsユーザー {users} 側も走査します",
+                       users=", ".join(p.name for p in wins)))
     # ネイティブWindowsでは自分のホームが %USERPROFILE% そのもの。
     # AppData系(Cursor/Windsurf/Cline/Copilot/VS)の走査対象に自分自身を足す
     # （従来はWSL経由 /mnt/c しか見ておらず、ネイティブWinのCursorユーザーを黙って見逃していた）
     win_self = [home] if os.name == "nt" and (home / "AppData").exists() else []
     if win_self:
-        notes.append("ネイティブWindowsを検出: %APPDATA% 配下(Cursor/Windsurf/Cline等)も走査します")
+        notes.append(t("ネイティブWindowsを検出: %APPDATA% 配下(Cursor/Windsurf/Cline等)も走査します"))
     win_all = wins + win_self
     home_label = "home" if os.name == "nt" else "wsl"  # 既存WSLユーザーのkey互換のためwslは維持
 
@@ -78,28 +80,30 @@ def run_probe(home: Path, extra_scan: list[Path] | None = None) -> dict:
         p = Path(ccd).expanduser()
         # CLAUDE_CONFIG_DIR が .claude ルートでも projects 直指しでも受ける
         cc_roots.append((p / "projects" if (p / "projects").exists() else p, "config_dir"))
-        notes.append(f"CLAUDE_CONFIG_DIR={ccd} を検出（VS/VS Code拡張もこの場所を共有します）")
+        notes.append(t("CLAUDE_CONFIG_DIR={dir} を検出（VS/VS Code拡張もこの場所を共有します）", dir=ccd))
     seen_roots: set[str] = set()
     for root, label in cc_roots:
         if root.exists() and str(root) not in seen_roots:
             seen_roots.add(str(root))
             n = sum(1 for _ in root.rglob("*.jsonl"))
             sources.append({"kind": "claude_code", "key": f"claude_code:{label}", "root": str(root), "enabled": True})
-            notes.append(f"claude_code[{label}]: {root} (transcript {n}件)")
+            notes.append(t("claude_code[{label}]: {root} (transcript {n}件)", label=label, root=root, n=n))
 
     # --- VS Code / Visual Studio の Claude Code 拡張（transcriptは上記.claudeと共有） ---
     ext_globs = [
-        (home / ".vscode-server" / "extensions", "anthropic.claude-code*", "VS Code拡張(WSLリモート)"),
-        (home / ".vscode" / "extensions", "anthropic.claude-code*", "VS Code拡張"),
-    ] + [(u / ".vscode" / "extensions", "anthropic.claude-code*", f"VS Code拡張(win:{u.name})") for u in wins]
+        (home / ".vscode-server" / "extensions", "anthropic.claude-code*", "VS Code (WSL remote)"),
+        (home / ".vscode" / "extensions", "anthropic.claude-code*", "VS Code"),
+    ] + [(u / ".vscode" / "extensions", "anthropic.claude-code*", f"VS Code (win:{u.name})") for u in wins]
     for base, pat, label in ext_globs:
         if base.exists() and any(base.glob(pat)):
-            notes.append(f"{label} を検出: セッションは上記 .claude/projects のtranscriptに書かれるので追加設定は不要です")
+            notes.append(t("{label} のClaude Code拡張を検出: セッションは上記 .claude/projects のtranscriptに書かれるので追加設定は不要です",
+                           label=label))
             break
     for u in win_all:  # Visual Studio(.NET IDE)向けサードパーティ拡張の痕跡
         vsx = u / "AppData" / "Local" / "Microsoft" / "VisualStudio"
         if vsx.exists() and any(vsx.rglob("ClaudeCodeExtension*")):
-            notes.append(f"Visual Studio拡張(win:{u.name}) を検出: これも .claude/projects / CLAUDE_CONFIG_DIR のtranscriptを読み書きします")
+            notes.append(t("Visual Studio拡張(win:{user}) を検出: これも .claude/projects / CLAUDE_CONFIG_DIR のtranscriptを読み書きします",
+                           user=u.name))
             break
 
     # --- Codex CLI ---
@@ -126,7 +130,8 @@ def run_probe(home: Path, extra_scan: list[Path] | None = None) -> dict:
             if kind == "cursor_ide" and "cursorDiskKV" in info.get("tables", []):
                 sources.append({"kind": "cursor_ide", "key": f"cursor_ide:{label}", "db": str(db), "enabled": True})
             else:
-                detected.append({"kind": kind, "path": str(db), "hint": "cursorDiskKV相当のテーブル構造をprobe出力で確認し、アダプタ追加/流用を検討"})
+                detected.append({"kind": kind, "path": str(db),
+                                 "hint": t("cursorDiskKV相当のテーブル構造をprobe出力で確認し、アダプタ追加/流用を検討")})
 
     # --- aider（home直下1〜2階層 + 指定ディレクトリ）---
     aider_paths: list[str] = []
@@ -136,13 +141,13 @@ def run_probe(home: Path, extra_scan: list[Path] | None = None) -> dict:
             aider_paths += [str(p) for p in Path(r).glob(pat)]
     if aider_paths:
         sources.append({"kind": "aider", "key": "aider:default", "paths": sorted(set(aider_paths)), "enabled": True})
-        notes.append(f"aider: {len(set(aider_paths))}ファイル")
+        notes.append(t("aider: {n}ファイル", n=len(set(aider_paths))))
 
     # --- 検出のみ（アダプタ未実装 or 形式未固定）---
     only = [
-        ("gemini_cli", home / ".gemini" / "tmp", "logs.json/checkpointは配列JSON。必要なら専用アダプタ追加"),
-        ("goose", home / ".local" / "share" / "goose" / "sessions", "generic_jsonl (role/content) で概ね取れる"),
-        ("opencode", home / ".local" / "share" / "opencode", "形式をprobeで確認のうえgeneric_jsonl設定"),
+        ("gemini_cli", home / ".gemini" / "tmp", t("logs.json/checkpointは配列JSON。必要なら専用アダプタ追加")),
+        ("goose", home / ".local" / "share" / "goose" / "sessions", t("generic_jsonl (role/content) で概ね取れる")),
+        ("opencode", home / ".local" / "share" / "opencode", t("形式をprobeで確認のうえgeneric_jsonl設定")),
         ("cline", home / ".config" / "Code" / "User" / "globalStorage" / "saoudrizwan.claude-dev", "tasks/*/api_conversation_history.json"),
     ]
     for u in win_all:
@@ -167,12 +172,13 @@ def dump_sources_toml(result: dict) -> str:
             return "[" + ", ".join(fmt(x) for x in v) + "]"
         return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
-    lines = ["# tamo sources — `tamo probe --write` により生成。手で編集可。", ""]
+    lines = [t("# tamo sources — `tamo probe --write` により生成。手で編集可。"), ""]
     for s in result["sources"]:
         lines.append("[[source]]")
         for k, v in s.items():
             lines.append(f"{k} = {fmt(v)}")
         lines.append("")
     for d in result["detected_only"]:
-        lines.append(f"# 検出のみ: {d['kind']} @ {d['path']}  ヒント: {d['hint']}")
+        lines.append(t("# 検出のみ: {kind} @ {path}  ヒント: {hint}",
+                       kind=d["kind"], path=d["path"], hint=d["hint"]))
     return "\n".join(lines) + "\n"

@@ -14,18 +14,23 @@ from __future__ import annotations
 import base64
 import json
 
+from .i18n import t
+
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError as e:  # pragma: no cover
-    raise SystemExit("mcpパッケージが必要です: pip install 'mcp[cli]'") from e
+    raise SystemExit(t("mcpパッケージが必要です: pip install 'mcp[cli]'")) from e
 
 from .optimize import build_pack
 from .store import Store
 from .util import tamo_home
 
+# ツール説明はLLM向けの固定英語（表示言語に依存させない）。日本語検索が効く旨は説明側に明記する
 mcp = FastMCP("tamo", instructions=(
-    "tamoはローカルの複数AIエージェント（Claude Code / Cursor / Codex CLI / ブラウザ等）から"
-    "決定論的に収集した会話コンテキストの保管庫。まず search_context か get_context_pack を使うこと。"
+    "tamo is a local vault of conversation context harvested deterministically from "
+    "multiple AI agents (Claude Code / Cursor / Codex CLI / browser chats). "
+    "For 'what happened with X?' questions call `recall` first; use search_context / "
+    "get_context_pack for narrower lookups."
 ))
 
 
@@ -35,11 +40,13 @@ def _store() -> Store:
 
 @mcp.tool()
 def search_context(query: str, limit: int = 8, source: str = "") -> str:
-    """過去の全エージェント会話を全文検索する（日本語部分一致・添付の中身も対象）。
-    返り値の各hitは {event_id, session_key, ts, actor, snippet}。
-    注: 「あの件どうなってた？」系の調査は、まず recall(query) の方が速い
-    （検索+前後の顛末+添付根拠を1コールで合成して返す）。
-    search_contextはヒット一覧だけ欲しい時・recallの結果から深掘りする時に使う。"""
+    """Full-text search across all harvested agent conversations (CJK substring
+    matching works; attachment contents are indexed too). Each hit is
+    {event_id, session_key, ts, actor, snippet}.
+    Note: for "what happened with X?" investigations, `recall(query)` is usually
+    better — it stitches matches + surrounding outcomes + attachment evidence in
+    one call. Use search_context when you only want the hit list, or to dig
+    further from a recall result."""
     s = _store()
     try:
         return json.dumps(s.search(query, limit, source=source or None), ensure_ascii=False, indent=1)
@@ -49,14 +56,16 @@ def search_context(query: str, limit: int = 8, source: str = "") -> str:
 
 @mcp.tool()
 def recall(query: str, budget_tokens: int = 3500, max_hits: int = 4, source: str = "") -> str:
-    """「あの件どうなってた？」への一発ツール（最初にこれを呼ぶ）。
-    ヒットした各セッションを「★一致箇所 / セッション全体の要点走査(遠い結論も拾う) /
-    終盤(どう終わったか)」の3部ダイジェストに決定論合成して1コールで返す
-    （小さいセッションは全文）。★=一致行、📎=添付根拠、⟨e:xxxx⟩=出所ID。
-    「Geminiで聞いてた」「Claude(Web)で話してた」のような面指定があれば source を渡す —
-    source_kindの部分一致: "gemini"→gemini_web / "chatgpt"→chatgpt_web /
-    "claude_web"(=claude.ai) / "claude_code"(=CLI/IDE) / "claude"は両方 / "cursor" 等。
-    これで足りない時だけ get_session / get_blob_text で深掘りする。"""
+    """One-shot answer to "what happened with X?" — call this first.
+    Deterministically stitches each matching session into a 3-part digest:
+    ★ matched lines / a key-point scan of the whole session (catches distant
+    conclusions) / how it ended (small sessions are returned in full).
+    Legend: ★ = matched line, 📎 = attachment evidence, ⟨e:xxxx⟩ = provenance id.
+    If the user names a surface ("I asked Gemini", "in Claude web"), pass
+    `source` — substring match on source_kind: "gemini"→gemini_web,
+    "chatgpt"→chatgpt_web, "claude_web" (claude.ai), "claude_code" (CLI/IDE),
+    "claude" matches both, "cursor", etc. Only reach for get_session /
+    get_blob_text when this is not enough."""
     from .recall import recall as _recall
 
     s = _store()
@@ -69,10 +78,10 @@ def recall(query: str, budget_tokens: int = 3500, max_hits: int = 4, source: str
 
 @mcp.tool()
 def get_context(event_id: str, before: int = 3, after: int = 6) -> str:
-    """検索で当てたイベントの「前後」を読む（会話版 grep -C）。
-    event_id は search_context の hit や ⟨e:xxxx⟩ の8桁短縮でOK。
-    対象イベントに "_hit": true が付き、前後は同一セッションの元の順序。
-    本文は1500字にスリム化済み（受け手の文脈を圧迫しない）。"""
+    """Read the surroundings of a matched event (grep -C for conversations).
+    event_id accepts a search_context hit or the 8-char short form from ⟨e:xxxx⟩.
+    The target event is flagged "_hit": true; neighbors come in original session
+    order. Bodies are slimmed to 1500 chars to keep your context lean."""
     from .schema import blocks_text
     from .util import strip_noise, truncate
 
@@ -93,8 +102,8 @@ def get_context(event_id: str, before: int = 3, after: int = 6) -> str:
 
 @mcp.tool()
 def get_context_pack(budget_tokens: int = 6000, query: str = "", session_key: str = "", days: int = 14) -> str:
-    """トークン予算内に最適化された引き継ぎパック(Markdown)を得る。
-    新しいセッションの冒頭に貼る用途を想定。queryで話題を絞れる。"""
+    """Get a handoff pack (Markdown) optimized into the given token budget.
+    Meant to be pasted at the top of a fresh session; `query` narrows the topic."""
     s = _store()
     try:
         events = s.iter_session_events(session_key) if session_key else s.recent_events(days=days)
@@ -106,9 +115,9 @@ def get_context_pack(budget_tokens: int = 6000, query: str = "", session_key: st
 
 @mcp.tool()
 def list_sessions(limit: int = 20, source: str = "") -> str:
-    """収集済みセッションの一覧（新しい順）。
-    source はsource_kindの部分一致絞り込み（"gemini"→gemini_web / "claude_code" 等、
-    recall/search_contextと同じ意味）。空文字なら全ソース。"""
+    """List harvested sessions, newest first. `source` filters by substring of
+    source_kind ("gemini"→gemini_web, "claude_code", … — same semantics as
+    recall/search_context); empty string means all sources."""
     s = _store()
     try:
         return json.dumps(s.list_sessions(limit, source=source or None), ensure_ascii=False, indent=1)
@@ -120,16 +129,18 @@ def list_sessions(limit: int = 20, source: str = "") -> str:
 def get_session(session_key: str, max_events: int = 200,
                 since_event_id: str = "", since_ts: str = "",
                 compact: bool = True, max_chars: int = 60000) -> str:
-    """セッションの正規化イベント(CES)を取得。引き継ぎの続き取得に対応:
-    - session_key に "latest" / "latest:<source_kind>"（例 latest:claude_code）を指定すると
-      最終活動が最新のセッションに解決される
-    - since_event_id: そのイベントの次から（packや検索結果の ⟨e:xxxx⟩ 8桁でも可）。
-      見つからない場合は events は空（全量の誤送を防ぐ安全側）
-    - since_ts: そのISO時刻より後だけ / max_events: 末尾N件（既定200）
-    - compact(既定True): 各イベントを {event_id, ts, actor, kind, text(〜1500字)} にスリム化し、
-      応答全体も max_chars(既定60k字) に収める（古い側から間引き）— 受け手の
-      コンテキストウィンドウを圧迫しないための既定。生のCES全文が要るときだけ compact=false
-    返り値: {session_key, total, returned, truncated, events}"""
+    """Get a session's normalized events (CES), with resume/handoff support:
+    - session_key accepts "latest" / "latest:<source_kind>" (e.g. latest:claude_code)
+      to resolve the most recently active session
+    - since_event_id: continue from just after that event (accepts the 8-char
+      short id from packs / search results). Unknown ids return empty events
+      (fail-safe against dumping everything)
+    - since_ts: only events after that ISO timestamp / max_events: last N (default 200)
+    - compact (default True): slims each event to {event_id, ts, actor, kind,
+      text (~1500 chars)} and caps the whole response at max_chars (default 60k,
+      trimming oldest first) so your context window is not flooded. Set
+      compact=false only when you need raw CES.
+    Returns: {session_key, total, returned, truncated, events}"""
     from .schema import blocks_text
     from .util import strip_noise, truncate
 
@@ -161,8 +172,9 @@ def get_session(session_key: str, max_events: int = 200,
 
 @mcp.tool()
 def get_blob_text(sha256: str) -> str:
-    """添付ファイル(PDF/docx/xlsx/pptx/テキスト)から決定論抽出済みのテキストを取得する。
-    会話中の [blob ... sha=...] 参照の中身を読みたいときはまずこれ（base64より軽い）。"""
+    """Get the deterministically-extracted text of an attachment (PDF/docx/xlsx/
+    pptx/plain text). Reach for this first when resolving a [blob … sha=…]
+    reference in a conversation — much lighter than base64."""
     s = _store()
     try:
         r = s.get_blob_text(sha256)
@@ -173,7 +185,8 @@ def get_blob_text(sha256: str) -> str:
 
 @mcp.tool()
 def get_blob_base64(sha256: str) -> str:
-    """CASから添付ファイル/画像をbase64で取得（5MBまで）。会話中の [blob sha=...] 参照を解決する。"""
+    """Fetch the original attachment/image bytes from CAS as base64 (up to 5MB).
+    Resolves [blob sha=…] references in conversations."""
     s = _store()
     try:
         p = s.cas.get_path(sha256)
@@ -212,9 +225,9 @@ class _TokenGate:
             if not supplied and auth.lower().startswith("bearer "):
                 supplied = auth[7:].strip()
             if not secrets.compare_digest(supplied.encode(), self._token):
-                body = ("unauthorized: X-Tamo-Token ヘッダ（`tamo token` の値）が必要です。"
-                        "登録例: claude mcp add --transport http tamo http://127.0.0.1:8788/mcp"
-                        " --header \"X-Tamo-Token: $(tamo token)\"").encode()
+                body = t("unauthorized: X-Tamo-Token ヘッダ（`tamo token` の値）が必要です。"
+                         "登録例: claude mcp add --transport http tamo http://127.0.0.1:8788/mcp"
+                         " --header \"X-Tamo-Token: $(tamo token)\"").encode()
                 await send({"type": "http.response.start", "status": 401,
                             "headers": [(b"content-type", b"text/plain; charset=utf-8"),
                                         (b"content-length", str(len(body)).encode())]})
@@ -237,13 +250,13 @@ def run(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8788) -> 
     app_factory = getattr(mcp, "streamable_http_app", None)
     if app_factory is None:
         # 認証を差し込めない旧SDKで、全会話を無認証公開する方が害が大きい → 起動を拒否
-        raise SystemExit("mcp SDKが古くhttp認証を適用できません: pip install -U 'mcp[cli]'")
+        raise SystemExit(t("mcp SDKが古くhttp認証を適用できません: pip install -U 'mcp[cli]'"))
     import uvicorn
 
     mcp.settings.host = host
     mcp.settings.port = port
-    print(f"[tamo] MCP: http://{host}:{port}/mcp （X-Tamo-Token 認証・値は `tamo token`）",
-          file=sys.stderr)
+    print(t("[tamo] MCP: http://{host}:{port}/mcp （X-Tamo-Token 認証・値は `tamo token`）",
+            host=host, port=port), file=sys.stderr)
     uvicorn.run(_TokenGate(app_factory(), inbox_token()), host=host, port=port, log_level="warning")
 
 

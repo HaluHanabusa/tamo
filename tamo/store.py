@@ -89,10 +89,12 @@ class Store:
         ver = self.con.execute("PRAGMA user_version").fetchone()[0]
         if ver > SCHEMA_VERSION:
             self.con.close()
-            raise RuntimeError(
-                f"このDB({self.db_path})は新しいtamo(schema v{ver})で作られています。"
-                f"tamoを更新してください（このtamoは v{SCHEMA_VERSION} まで）"
-            )
+            from .i18n import t
+
+            raise RuntimeError(t(
+                "このDB({path})は新しいtamo(schema v{ver})で作られています。"
+                "tamoを更新してください（このtamoは v{cur} まで）",
+                path=self.db_path, ver=ver, cur=SCHEMA_VERSION))
         if ver < SCHEMA_VERSION:
             self._migrate(ver)
 

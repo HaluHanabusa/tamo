@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import adapters
 from .config import inbox_token, load_sources, sources_path
+from .i18n import lang, t
 from .optimize import build_pack
 from .probe import dump_sources_toml, run_probe
 from .store import Store
@@ -77,12 +78,12 @@ def _acquire_lock(lock: Path):
             except (OSError, ValueError):
                 pid = 0
             if pid and _pid_alive(pid):
-                print(f"別のtamoが実行中です (PID {pid})。serve/watch常駐中なら手動collectは不要です。\n"
-                      f"  そのPIDが本当に存在しないのにこの表示が続く場合は {lock} を削除してください",
-                      file=sys.stderr)
+                print(t("別のtamoが実行中です (PID {pid})。serve/watch常駐中なら手動collectは不要です。\n"
+                        "  そのPIDが本当に存在しないのにこの表示が続く場合は {lock} を削除してください",
+                        pid=pid, lock=lock), file=sys.stderr)
                 sys.exit(2)
-            print(f"[tamo] 残留ロックを回収しました（PID {pid or '?'} は動いていません）: {lock}",
-                  file=sys.stderr)
+            print(t("[tamo] 残留ロックを回収しました（PID {pid} は動いていません）: {lock}",
+                    pid=pid or "?", lock=lock), file=sys.stderr)
             try:
                 lock.unlink()
             except OSError:
@@ -94,7 +95,8 @@ def _acquire_lock(lock: Path):
         except OSError:
             pass
         return fd
-    print(f"ロックを取得できません: {lock}（tamoが動いていなければ削除して再実行してください）", file=sys.stderr)
+    print(t("ロックを取得できません: {lock}（tamoが動いていなければ削除して再実行してください）", lock=lock),
+          file=sys.stderr)
     sys.exit(2)
 
 
@@ -112,7 +114,7 @@ def do_collect(rescan: list[str] | None = None, only: list[str] | None = None, q
                     continue
                 cls = adapters.REGISTRY.get(kind)
                 if not cls:
-                    print(f"  ! 未知のkind: {kind}（スキップ）", file=sys.stderr)
+                    print(t("  ! 未知のkind: {kind}（スキップ）", kind=kind), file=sys.stderr)
                     continue
                 ad = cls(cfg)
                 cursor = {} if (rescan and (kind in rescan or ad.key in rescan)) else store.get_cursor(ad.key)
@@ -158,9 +160,10 @@ def cmd_probe(args):
     for n in res["notes"]:
         print("  •", n)
     if res["detected_only"]:
-        print("-- 検出のみ（アダプタ設定が必要） --")
+        print(t("-- 検出のみ（アダプタ設定が必要） --"))
         for d in res["detected_only"]:
-            print(f"  ? {d['kind']:<14} {d['path']}\n      ヒント: {d['hint']}")
+            print(t("  ? {kind:<14} {path}\n      ヒント: {hint}",
+                    kind=d["kind"], path=d["path"], hint=d["hint"]))
     toml = dump_sources_toml(res)
     if args.write:
         sp = sources_path()
@@ -172,29 +175,30 @@ def cmd_probe(args):
                 bak = sp.with_name("sources.toml.bak")
                 bak.write_text(old, encoding="utf-8")
                 diff = list(difflib.unified_diff(old.splitlines(), toml.splitlines(),
-                                                 fromfile="sources.toml(旧)", tofile="sources.toml(新)",
+                                                 fromfile="sources.toml(old)", tofile="sources.toml(new)",
                                                  lineterm=""))
-                print(f"-- 既存の sources.toml を {bak.name} に退避しました。変更点:")
+                print(t("-- 既存の sources.toml を {bak} に退避しました。変更点:", bak=bak.name))
                 for line in diff[:40]:
                     print("  " + line)
                 if len(diff) > 40:
-                    print(f"  … 他{len(diff) - 40}行")
+                    print(t("  … 他{n}行", n=len(diff) - 40))
         # encoding必須: OS既定(cp932等)で書くと読取側tomllib(厳格UTF-8)が全collectを道連れにする
         sp.write_text(toml, encoding="utf-8")
-        print(f"-> {sp} に {len(res['sources'])} ソースを書き込みました")
-        print("   保持期間は既定で無期限です（業務PCでは settings.toml の [retention] days = 90 等を推奨。"
-              "リスクと運用指針: docs/ARCHITECTURE.md）", file=sys.stderr)
+        print(t("-> {path} に {n} ソースを書き込みました", path=sp, n=len(res["sources"])))
+        print(t("   保持期間は既定で無期限です（業務PCでは settings.toml の [retention] days = 90 等を推奨。"
+                "リスクと運用指針: docs/ARCHITECTURE.md）"), file=sys.stderr)
     else:
-        print("-- sources.toml（--write で保存） --")
+        print(t("-- sources.toml（--write で保存） --"))
         print(toml)
 
 
 def cmd_collect(args):
-    t = do_collect(rescan=args.rescan, only=args.only)
-    print(f"合計: raw+{t['raw_new']} events+{t['events_new']} quarantine+{t['quarantined']}")
+    totals = do_collect(rescan=args.rescan, only=args.only)
+    print(t("合計: raw+{raw} events+{ev} quarantine+{q}",
+            raw=totals["raw_new"], ev=totals["events_new"], q=totals["quarantined"]))
     if not sources_path().exists():
-        print("ヒント: ソースが未設定のためinboxだけを見ています。まず `tamo probe --write` で"
-              "環境を走査してください", file=sys.stderr)
+        print(t("ヒント: ソースが未設定のためinboxだけを見ています。まず `tamo probe --write` で"
+                "環境を走査してください"), file=sys.stderr)
 
 
 class _Heartbeat:
@@ -214,8 +218,9 @@ class _Heartbeat:
         now = time.time()
         if now - self.last >= self.every:
             up_h = (now - self.t0) / 3600
-            print(f"[tamo] 稼働{up_h:.1f}h: 直近{self.every // 60}分 raw+{self.raw} "
-                  f"events+{self.ev} ({self.cycles}サイクル)", file=sys.stderr)
+            print(t("[tamo] 稼働{h:.1f}h: 直近{m}分 raw+{raw} events+{ev} ({c}サイクル)",
+                    h=up_h, m=self.every // 60, raw=self.raw, ev=self.ev, c=self.cycles),
+                  file=sys.stderr)
             self.raw = self.ev = self.cycles = 0
             self.last = now
 
@@ -227,7 +232,7 @@ def _collect_cycle(quiet: bool = True) -> dict | None:
     except SystemExit as e:
         # do_collect内のsys.exit(2)系は自前でメッセージ済み。文字列コード(設定エラー等)はここで表示
         if isinstance(e.code, str):
-            print(f"[tamo] collect中断: {e.code}", file=sys.stderr)
+            print(t("[tamo] collect中断: {code}", code=e.code), file=sys.stderr)
     except Exception as e:  # noqa: BLE001  収集失敗でサービス全体は止めない
         print(f"[tamo] collect error: {e}", file=sys.stderr)
     return None
@@ -240,13 +245,14 @@ def cmd_watch(args):
         try:
             start_background(args.port)
         except OSError as e:
-            print(f"HTTP inboxポート {args.port} を開けません（{e}）。\n"
-                  f"  別のtamo(serve/watch)が動いていませんか？ `--port <別番号>` で変更できます",
-                  file=sys.stderr)
+            print(t("HTTP inboxポート {port} を開けません（{err}）。\n"
+                    "  別のtamo(serve/watch)が動いていませんか？ `--port <別番号>` で変更できます",
+                    port=args.port, err=e), file=sys.stderr)
             sys.exit(2)
         print(f"HTTP inbox: http://127.0.0.1:{args.port}/inbox  (X-Tamo-Token: {inbox_token()})")
     if not args.once:
-        print(f"{args.interval}s 間隔でポーリング収集します（WSL2の/mnt/c配下はinotifyが効かないためポーリングが正解）")
+        print(t("{interval}s 間隔でポーリング収集します（WSL2の/mnt/c配下はinotifyが効かないためポーリングが正解）",
+                interval=args.interval))
     hb = _Heartbeat()
     while True:
         totals = _collect_cycle(quiet=True)
@@ -288,8 +294,8 @@ def cmd_search(args):
     hits = store.search(args.query, args.limit, source=getattr(args, "source", None))
     store.close()
     if not hits:  # 無出力だと「0件」と「壊れた」の区別がつかない（recallの空表示と同じ扱いに）
-        print(f"(該当なし: {args.query!r} — 語を短くする・別の言い方を試す、"
-              f"または `tamo collect` で最新を取り込んでください)", file=sys.stderr)
+        print(t("(該当なし: {query!r} — 語を短くする・別の言い方を試す、"
+                "または `tamo collect` で最新を取り込んでください)", query=args.query), file=sys.stderr)
         return
     for r in hits:
         print(f"[{r['ts'] or '-'}] {r['actor']:<9} {r['session_key']}\n    {r['snippet']}\n    e:{r['event_id']}")
@@ -366,6 +372,22 @@ _HOOK_SNIPPET = """\
   同じ `tamo ingest-hook` を流用できます（transcript_pathが無い場合は全体collectにフォールバック）。
 """
 
+# JSONの波括弧を含む文書型の定数はt()辞書でなく言語別定数で持つ（.formatと衝突させない）
+_HOOK_SNIPPET_EN = """\
+Merge the following into ~/.claude/settings.json (the "hooks" key):
+{
+  "hooks": {
+    "Stop":       [ { "hooks": [ { "type": "command", "command": "%(cmd)s", "async": true, "timeout": 30 } ] } ],
+    "SessionEnd": [ { "hooks": [ { "type": "command", "command": "%(cmd)s", "async": true, "timeout": 30 } ] } ]
+  }
+}
+- Stop fires every turn (near-real-time ingestion); SessionEnd is the final ingestion at session end.
+- async: true, so Claude Code is never blocked.
+- The hook receives session_id / transcript_path / cwd on stdin and immediately ingests just that transcript.
+- Codex CLI (v0.5x+) and Cursor (v1.7+) ship the same style of hooks, so the same
+  `tamo ingest-hook` can be reused (falls back to a full collect when transcript_path is absent).
+"""
+
 
 def cmd_mirror(args):
     from .derive import mirror_sessions
@@ -392,7 +414,7 @@ def cmd_rules(args):
     finally:
         store.close()
     if not md:
-        print("抽出できる決定/制約/エラー対処が見つかりませんでした", file=sys.stderr)
+        print(t("抽出できる決定/制約/エラー対処が見つかりませんでした"), file=sys.stderr)
         return
     if args.write:
         action = write_rules_into(Path(args.write), md)
@@ -408,14 +430,14 @@ def cmd_run(args):
 
     cmd = [c for c in (args.command or []) if c != "--"]
     if not cmd:
-        print("usage: tamo run -- <command...>   (例: tamo run -- claude)", file=sys.stderr)
+        print(t("usage: tamo run -- <command...>   (例: tamo run -- claude)"), file=sys.stderr)
         sys.exit(2)
     try:
         rc = subprocess.call(cmd)
     except KeyboardInterrupt:
         rc = 130
     except FileNotFoundError:
-        print(f"コマンドが見つかりません: {cmd[0]}", file=sys.stderr)
+        print(t("コマンドが見つかりません: {cmd}", cmd=cmd[0]), file=sys.stderr)
         sys.exit(127)
     ns = argparse.Namespace(only=args.only, rescan=None)
     cmd_collect(ns)
@@ -457,11 +479,11 @@ def warn_db_size(warn_mb: int, usage_mb: float | None = None) -> bool:
     mb = usage_mb if usage_mb is not None else _disk_usage_mb()
     if mb < warn_mb:
         return False
-    print(f"[tamo] データが {mb / 1000:.1f}GB に達しています（警告閾値 {warn_mb}MB）。\n"
-          f"  保持期間の設定: ~/.tamo/settings.toml の [retention] days = 90 など\n"
-          f"  手動整理: tamo prune --days N --dry-run で確認 → --vacuum で詰める\n"
-          f"  この警告の閾値変更/無効化: [retention] warn_db_mb（0=警告しない）",
-          file=sys.stderr)
+    print(t("[tamo] データが {gb:.1f}GB に達しています（警告閾値 {warn}MB）。\n"
+            "  保持期間の設定: ~/.tamo/settings.toml の [retention] days = 90 など\n"
+            "  手動整理: tamo prune --days N --dry-run で確認 → --vacuum で詰める\n"
+            "  この警告の閾値変更/無効化: [retention] warn_db_mb（0=警告しない）",
+            gb=mb / 1000, warn=warn_mb), file=sys.stderr)
     return True
 
 
@@ -504,8 +526,8 @@ def cmd_serve(args):
     try:
         from . import mcp_server
     except SystemExit:
-        print("serve にはMCP拡張が必要です: pip install 'mcp[cli]'\n"
-              "  （MCP無しで収集+ブラウザ投函だけなら `tamo watch --http` が使えます）", file=sys.stderr)
+        print(t("serve にはMCP拡張が必要です: pip install 'mcp[cli]'\n"
+                "  （MCP無しで収集+ブラウザ投函だけなら `tamo watch --http` が使えます）"), file=sys.stderr)
         sys.exit(2)
 
     ensure_settings_file()
@@ -525,9 +547,9 @@ def cmd_serve(args):
             sk.close()
 
     if not _port_free(mcp_port):
-        print(f"MCPポート {mcp_port} は使用中です。既に tamo serve が動いていませんか？\n"
-              f"  変更するには: tamo serve --mcp-port <別番号>（settings.toml の [serve] mcp_port でも可）",
-              file=sys.stderr)
+        print(t("MCPポート {port} は使用中です。既に tamo serve が動いていませんか？\n"
+                "  変更するには: tamo serve --mcp-port <別番号>（settings.toml の [serve] mcp_port でも可）",
+                port=mcp_port), file=sys.stderr)
         sys.exit(2)
 
     tok = inbox_token()
@@ -537,15 +559,16 @@ def cmd_serve(args):
         try:
             start_background(inbox_port)
         except OSError as e:
-            print(f"inboxポート {inbox_port} を開けません（{e}）。\n"
-                  f"  変更するには: tamo serve --inbox-port <別番号>（settings.toml でも可）", file=sys.stderr)
+            print(t("inboxポート {port} を開けません（{err}）。\n"
+                    "  変更するには: tamo serve --inbox-port <別番号>（settings.toml でも可）",
+                    port=inbox_port, err=e), file=sys.stderr)
             sys.exit(2)
         print(f"inbox : http://127.0.0.1:{inbox_port}/inbox  (X-Tamo-Token: {tok})")
-    print(f"mcp   : http://127.0.0.1:{mcp_port}/mcp  (streamable-http, X-Tamo-Token認証)")
-    print(f"collect: {interval}s間隔でポーリング（ソース側の自動削除より先に掬うのが仕事）")
-    print("登録例:")
+    print(t("mcp   : http://127.0.0.1:{port}/mcp  (streamable-http, X-Tamo-Token認証)", port=mcp_port))
+    print(t("collect: {interval}s間隔でポーリング（ソース側の自動削除より先に掬うのが仕事）", interval=interval))
+    print(t("登録例:"))
     print(f'  claude mcp add --transport http tamo http://127.0.0.1:{mcp_port}/mcp --header "X-Tamo-Token: {tok}"')
-    print(f"  # stdio派: claude mcp add tamo -- tamo mcp")
+    print(t("  # stdio派: claude mcp add tamo -- tamo mcp"))
 
     def loop() -> None:
         hb = _Heartbeat()
@@ -576,8 +599,8 @@ def cmd_prune(args):
     ensure_settings_file()
     days = args.days if args.days is not None else load_settings()["retention"]["days"]
     if not days or days <= 0:
-        print("保持日数が未設定です: --days N を指定するか settings.toml の [retention] days を設定してください"
-              "（0 = 無期限 = 何も消しません）", file=sys.stderr)
+        print(t("保持日数が未設定です: --days N を指定するか settings.toml の [retention] days を設定してください"
+                "（0 = 無期限 = 何も消しません）"), file=sys.stderr)
         sys.exit(2)
     store = _store()
     try:
@@ -588,11 +611,11 @@ def cmd_prune(args):
             if total:
                 print(json.dumps(preview, ensure_ascii=False, indent=2))
                 if not sys.stdin.isatty():
-                    print("削除を実行するには --yes を付けてください（非対話環境）", file=sys.stderr)
+                    print(t("削除を実行するには --yes を付けてください（非対話環境）"), file=sys.stderr)
                     sys.exit(2)
-                ans = input(f"{days}日より古い上記データを削除します。よろしいですか？ [y/N] ").strip().lower()
+                ans = input(t("{days}日より古い上記データを削除します。よろしいですか？ [y/N] ", days=days)).strip().lower()
                 if ans not in ("y", "yes"):
-                    print("中止しました", file=sys.stderr)
+                    print(t("中止しました"), file=sys.stderr)
                     sys.exit(1)
         r = store.prune(days, dry_run=args.dry_run)
         if args.vacuum and not args.dry_run:
@@ -612,33 +635,33 @@ def cmd_quarantine(args):
                 sys.exit(2)
             q = store.quarantine_get(args.id)
             if not q:
-                print(f"id={args.id} は見つかりません", file=sys.stderr)
+                print(t("id={id} は見つかりません", id=args.id), file=sys.stderr)
                 sys.exit(1)
             print(json.dumps(q, ensure_ascii=False, indent=2))
         elif args.action == "clear":
             if not args.yes:
-                print("隔離データを削除します（原文はここにしか残っていません）。実行するには --yes を付けてください。",
+                print(t("隔離データを削除します（原文はここにしか残っていません）。実行するには --yes を付けてください。"),
                       file=sys.stderr)
                 sys.exit(2)
             n = store.quarantine_clear(args.source)
-            print(f"cleared: {n}件")
+            print(t("cleared: {n}件", n=n))
         else:  # list
             rows = store.quarantine_list(args.limit, source=args.source)
             if not rows:
-                print("隔離データはありません（全行パース成功）")
+                print(t("隔離データはありません（全行パース成功）"))
                 return
             for r in rows:
                 err = (r["error"] or "").replace("\n", " ")
                 print(f"#{r['id']:<6} [{r['ts'] or '-'}] {r['source_kind'] or '-':<12} {r['locator']}")
                 print(f"        {err[:160]} ({r['payload_bytes'] or 0}B)")
-            print("-- 原文: tamo quarantine show --id N / 削除: tamo quarantine clear --yes")
+            print(t("-- 原文: tamo quarantine show --id N / 削除: tamo quarantine clear --yes"))
     finally:
         store.close()
 
 
 def cmd_purge(args):
     if not args.yes:
-        print("全データ(DB/CAS/処理済みinbox)を削除します。実行するには --yes を付けてください。", file=sys.stderr)
+        print(t("全データ(DB/CAS/処理済みinbox)を削除します。実行するには --yes を付けてください。"), file=sys.stderr)
         sys.exit(2)
     import shutil
 
@@ -654,8 +677,8 @@ def cmd_purge(args):
         if p.exists():
             shutil.rmtree(p)
             removed.append(d + "/")
-    print(f"purged: {', '.join(removed) or '(何もありませんでした)'}"
-          "（sources.toml / settings.toml / inbox.token / 未処理inboxは残しています）")
+    print(t("purged: {items}（sources.toml / settings.toml / inbox.token / 未処理inboxは残しています）",
+            items=", ".join(removed) or t("(何もありませんでした)")))
 
 
 def _to_clipboard(text: str) -> str | None:
@@ -686,9 +709,10 @@ def cmd_recall(args):
     if args.copy:
         method = _to_clipboard(md)
         if method:
-            print(f"[tamo] クリップボードにコピーしました ({method}) — そのままブラウザAIに貼れます", file=sys.stderr)
+            print(t("[tamo] クリップボードにコピーしました ({method}) — そのままブラウザAIに貼れます",
+                    method=method), file=sys.stderr)
         else:
-            print("[tamo] クリップボードツールが見つかりません (clip.exe/pbcopy/wl-copy/xclip)", file=sys.stderr)
+            print(t("[tamo] クリップボードツールが見つかりません (clip.exe/pbcopy/wl-copy/xclip)"), file=sys.stderr)
 
 
 def cmd_show(args):
@@ -702,7 +726,7 @@ def cmd_show(args):
             src = key.split(":", 1)[1] if ":" in key else None
             key = store.latest_session_key(src)
             if not key:
-                print("セッションがありません", file=sys.stderr)
+                print(t("セッションがありません"), file=sys.stderr)
                 sys.exit(1)
         evs = store.iter_session_events(key, since_event_id=args.since_event,
                                         since_ts=args.since_ts, tail=args.tail)
@@ -711,7 +735,7 @@ def cmd_show(args):
     if args.json:
         print(json.dumps(evs, ensure_ascii=False, indent=1))
         return
-    print(f"# {key}  ({len(evs)}件)", file=sys.stderr)
+    print(t("# {key}  ({n}件)", key=key, n=len(evs)), file=sys.stderr)
     for e in evs:
         text = strip_noise(blocks_text(e.get("content", [])))
         head = f"[{e.get('ts') or '-'}] {e.get('actor'):<9}"
@@ -721,8 +745,9 @@ def cmd_show(args):
 
 
 def cmd_hook(args):
-    print(_HOOK_SNIPPET % {"cmd": args.command})
-    print(_CLAUDE_MD_SNIPPET)
+    ja = lang() == "ja"
+    print((_HOOK_SNIPPET if ja else _HOOK_SNIPPET_EN) % {"cmd": args.command})
+    print(_CLAUDE_MD_SNIPPET if ja else _CLAUDE_MD_SNIPPET_EN)
 
 
 _CLAUDE_MD_SNIPPET = """
@@ -743,6 +768,29 @@ description: tamoで過去の全エージェント会話を一発調査
 ---
 tamo MCPの `recall` ツールを query="$ARGUMENTS" で1回呼び、返ってきたMarkdown（★=一致行、
 📎=添付根拠、⟨e:xxxx⟩=出所ID）だけを根拠に日本語で簡潔に答えてください。追加のツール往復は不要です。
+"""
+
+_CLAUDE_MD_SNIPPET_EN = """
+# ---- Bonus: paste into CLAUDE.md to make Claude use tamo proactively ----
+## tamo (cross-agent context)
+When the `tamo` MCP is available:
+- For "what happened with X?" / "what did we decide before?", first call
+  **`recall(query="topic words")` exactly once** (it returns pre-stitched Markdown:
+  matches + surrounding outcomes + attachment evidence; further round-trips are rarely needed)
+- If a surface is named ("I asked Gemini", "in Claude web"), pass it: recall(query, source="gemini")
+- Only when recall is not enough: `get_session(session_key, since_event_id=...)` for the
+  continuation, `get_blob_text(sha)` for full attachment text
+- At session start, pull a key-point pack with `get_context_pack(query=...)`
+- The contents of `[添付(...) ... sha=xxxx]` attachment references are readable via `get_blob_text(sha256)`
+- The derived rules (the tamo:rules block below) are auto-updated by `tamo rules --write` / `tamo watch --rules`
+
+# ---- Bonus 2: /recall slash command (save as ~/.claude/commands/recall.md) ----
+---
+description: One-shot investigation of all past agent conversations via tamo
+---
+Call tamo MCP's `recall` tool once with query="$ARGUMENTS", then answer concisely using only the
+returned Markdown (★ = matched line, 📎 = attachment evidence, ⟨e:xxxx⟩ = provenance id).
+No further tool round-trips are needed.
 """
 
 
@@ -797,144 +845,144 @@ def _utf8_stdio() -> None:
 
 def main(argv=None):
     _utf8_stdio()
-    ap = argparse.ArgumentParser(prog="tamo", description="tamo — AIエージェント横断のコンテキスト収集器（タモ網）")
+    ap = argparse.ArgumentParser(prog="tamo", description=t("tamo — AIエージェント横断のコンテキスト収集器（タモ網）"))
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("probe", help="環境を走査してソースを自動検出")
+    p = sub.add_parser("probe", help=t("環境を走査してソースを自動検出"))
     p.add_argument("--home", default=str(Path.home()))
-    p.add_argument("--scan", nargs="*", help="aider等を探す追加ディレクトリ")
-    p.add_argument("--write", action="store_true", help="sources.tomlに書き込む")
+    p.add_argument("--scan", nargs="*", help=t("aider等を探す追加ディレクトリ"))
+    p.add_argument("--write", action="store_true", help=t("sources.tomlに書き込む"))
     p.set_defaults(fn=cmd_probe)
 
-    p = sub.add_parser("collect", help="全ソースを増分収集")
-    p.add_argument("--rescan", nargs="*", help="カーソルを無視して全再走査するkind/key")
-    p.add_argument("--only", nargs="*", help="このkind/keyのみ収集")
+    p = sub.add_parser("collect", help=t("全ソースを増分収集"))
+    p.add_argument("--rescan", nargs="*", help=t("カーソルを無視して全再走査するkind/key"))
+    p.add_argument("--only", nargs="*", help=t("このkind/keyのみ収集"))
     p.set_defaults(fn=cmd_collect)
 
-    p = sub.add_parser("watch", help="常駐（ポーリング収集 + 任意でHTTP inbox + 導出ルール自動還流）")
+    p = sub.add_parser("watch", help=t("常駐（ポーリング収集 + 任意でHTTP inbox + 導出ルール自動還流）"))
     p.add_argument("--interval", type=int, default=60)
     p.add_argument("--http", action="store_true")
     p.add_argument("--port", type=int, default=8787)
-    p.add_argument("--once", action="store_true", help="1サイクルだけ実行して終了（cron向け）")
-    p.add_argument("--rules", metavar="FILE", help="新イベント収集のたびに導出ルールをこのファイルへ冪等更新（例: CLAUDE.md）")
-    p.add_argument("--rules-project", help="rules対象の部分一致フィルタ")
+    p.add_argument("--once", action="store_true", help=t("1サイクルだけ実行して終了（cron向け）"))
+    p.add_argument("--rules", metavar="FILE", help=t("新イベント収集のたびに導出ルールをこのファイルへ冪等更新（例: CLAUDE.md）"))
+    p.add_argument("--rules-project", help=t("rules対象の部分一致フィルタ"))
     p.set_defaults(fn=cmd_watch)
 
-    p = sub.add_parser("stats", help="統計")
+    p = sub.add_parser("stats", help=t("統計"))
     p.set_defaults(fn=cmd_stats)
 
-    p = sub.add_parser("sessions", help="セッション一覧")
+    p = sub.add_parser("sessions", help=t("セッション一覧"))
     p.add_argument("--limit", type=int, default=30)
     p.set_defaults(fn=cmd_sessions)
 
-    p = sub.add_parser("search", help="全文検索（FTS5 trigram: 日本語部分一致OK）")
+    p = sub.add_parser("search", help=t("全文検索（FTS5 trigram: 日本語部分一致OK）"))
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=10)
-    p.add_argument("--source", help="面の絞り込み（source_kind部分一致）")
+    p.add_argument("--source", help=t("面の絞り込み（source_kind部分一致）"))
     p.set_defaults(fn=cmd_search)
 
-    p = sub.add_parser("pack", help="トークン予算内の引き継ぎパック(Markdown)を生成")
+    p = sub.add_parser("pack", help=t("トークン予算内の引き継ぎパック(Markdown)を生成"))
     p.add_argument("--budget", type=int, default=6000)
     p.add_argument("--query", default="")
-    p.add_argument("--session", help="特定session_keyのみ")
+    p.add_argument("--session", help=t("特定session_keyのみ"))
     p.add_argument("--days", type=int, default=14)
     p.add_argument("--out")
     p.set_defaults(fn=cmd_pack)
 
-    p = sub.add_parser("export", help="NDJSONエクスポート（OmniBrain等の下流へ）")
+    p = sub.add_parser("export", help=t("NDJSONエクスポート（OmniBrain等の下流へ）"))
     p.add_argument("--format", choices=["ndjson", "omnibrain"], default="omnibrain")
     p.add_argument("--include-raw", action="store_true")
     p.add_argument("--out")
     p.set_defaults(fn=cmd_export)
 
-    p = sub.add_parser("reindex-blobs", help="添付テキストを再抽出してFTSへ遡及登録（抽出器更新後/旧DB移行用）")
+    p = sub.add_parser("reindex-blobs", help=t("添付テキストを再抽出してFTSへ遡及登録（抽出器更新後/旧DB移行用）"))
     p.set_defaults(fn=lambda a: print(json.dumps(_reindex(), ensure_ascii=False)))
 
-    p = sub.add_parser("mirror", help="セッションをgitコミット可能なMarkdownとしてプロジェクトへミラー")
-    p.add_argument("--out", default=".tamo/history", help="出力先ディレクトリ（既定 ./.tamo/history）")
-    p.add_argument("--project", help="session_key/タイトル/locatorへの部分一致フィルタ")
+    p = sub.add_parser("mirror", help=t("セッションをgitコミット可能なMarkdownとしてプロジェクトへミラー"))
+    p.add_argument("--out", default=".tamo/history", help=t("出力先ディレクトリ（既定 ./.tamo/history）"))
+    p.add_argument("--project", help=t("session_key/タイトル/locatorへの部分一致フィルタ"))
     # コミット前提の出力なので安全側デフォルト: マスクは既定ON（原文が要る時だけ明示的にOFF）
     p.add_argument("--redact", action=argparse.BooleanOptionalAction, default=True,
-                   help="APIキー等の秘密情報をマスクして書く（既定ON。--no-redact で原文のまま）")
+                   help=t("APIキー等の秘密情報をマスクして書く（既定ON。--no-redact で原文のまま）"))
     p.set_defaults(fn=cmd_mirror)
 
-    p = sub.add_parser("rules", help="履歴から導出ルール(決定/制約/エラー対処)を規則ベース抽出しCLAUDE.md等へ還流")
-    p.add_argument("--project", help="session_key/タイトル/locatorへの部分一致フィルタ")
-    p.add_argument("--days", type=int, help="直近N日のイベントのみ対象")
+    p = sub.add_parser("rules", help=t("履歴から導出ルール(決定/制約/エラー対処)を規則ベース抽出しCLAUDE.md等へ還流"))
+    p.add_argument("--project", help=t("session_key/タイトル/locatorへの部分一致フィルタ"))
+    p.add_argument("--days", type=int, help=t("直近N日のイベントのみ対象"))
     p.add_argument("--per-section", type=int, default=20)
-    p.add_argument("--write", metavar="FILE", help="マーカー区間を冪等更新して書き込む（例: CLAUDE.md）")
+    p.add_argument("--write", metavar="FILE", help=t("マーカー区間を冪等更新して書き込む（例: CLAUDE.md）"))
     p.set_defaults(fn=cmd_rules)
 
-    p = sub.add_parser("run", help="エージェントCLIをそのまま実行し、終了時に増分収集（例: tamo run -- claude）")
-    p.add_argument("--only", help="終了時に収集するソースkind（既定は全ソース）")
-    p.add_argument("command", nargs=argparse.REMAINDER, help="実行するコマンド（-- の後に書く）")
+    p = sub.add_parser("run", help=t("エージェントCLIをそのまま実行し、終了時に増分収集（例: tamo run -- claude）"))
+    p.add_argument("--only", help=t("終了時に収集するソースkind（既定は全ソース）"))
+    p.add_argument("command", nargs=argparse.REMAINDER, help=t("実行するコマンド（-- の後に書く）"))
     p.set_defaults(fn=cmd_run)
 
-    p = sub.add_parser("serve", help="単体サービス起動: 収集 + HTTP inbox + MCP(streamable-http) + 自動prune を1プロセスで")
-    p.add_argument("--interval", type=int, help="収集ポーリング間隔(秒)。既定はsettings.toml")
-    p.add_argument("--mcp-port", type=int, help="MCPポート（既定8788）")
-    p.add_argument("--inbox-port", type=int, help="inboxポート（既定8787）")
-    p.add_argument("--no-inbox", action="store_true", help="ブラウザ投函口を起動しない")
-    p.add_argument("--rules", metavar="FILE", help="新イベント収集のたびに導出ルールを冪等更新")
-    p.add_argument("--rules-project", help="rules対象の部分一致フィルタ")
+    p = sub.add_parser("serve", help=t("単体サービス起動: 収集 + HTTP inbox + MCP(streamable-http) + 自動prune を1プロセスで"))
+    p.add_argument("--interval", type=int, help=t("収集ポーリング間隔(秒)。既定はsettings.toml"))
+    p.add_argument("--mcp-port", type=int, help=t("MCPポート（既定8788）"))
+    p.add_argument("--inbox-port", type=int, help=t("inboxポート（既定8787）"))
+    p.add_argument("--no-inbox", action="store_true", help=t("ブラウザ投函口を起動しない"))
+    p.add_argument("--rules", metavar="FILE", help=t("新イベント収集のたびに導出ルールを冪等更新"))
+    p.add_argument("--rules-project", help=t("rules対象の部分一致フィルタ"))
     p.set_defaults(fn=cmd_serve)
 
-    p = sub.add_parser("mcp", help="MCPサーバ単体起動（既定stdio。`claude mcp add tamo -- tamo mcp`）")
-    p.add_argument("--http", action="store_true", help="streamable-httpで常駐")
+    p = sub.add_parser("mcp", help=t("MCPサーバ単体起動（既定stdio。`claude mcp add tamo -- tamo mcp`）"))
+    p.add_argument("--http", action="store_true", help=t("streamable-httpで常駐"))
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8788)
     p.set_defaults(fn=cmd_mcp)
 
-    p = sub.add_parser("prune", help="保持期間を超えた古いデータを削除（活動時刻基準・mtime不使用）")
-    p.add_argument("--days", type=int, help="保持日数（省略時はsettings.tomlのretention.days）")
-    p.add_argument("--dry-run", action="store_true", help="削除せず件数だけ表示")
-    p.add_argument("--yes", action="store_true", help="確認プロンプトを省略して削除（purgeと同じ方針）")
-    p.add_argument("--vacuum", action="store_true", help="削除後にVACUUMでDBを詰める")
+    p = sub.add_parser("prune", help=t("保持期間を超えた古いデータを削除（活動時刻基準・mtime不使用）"))
+    p.add_argument("--days", type=int, help=t("保持日数（省略時はsettings.tomlのretention.days）"))
+    p.add_argument("--dry-run", action="store_true", help=t("削除せず件数だけ表示"))
+    p.add_argument("--yes", action="store_true", help=t("確認プロンプトを省略して削除（purgeと同じ方針）"))
+    p.add_argument("--vacuum", action="store_true", help=t("削除後にVACUUMでDBを詰める"))
     p.set_defaults(fn=cmd_prune)
 
-    p = sub.add_parser("quarantine", help="パース不能で隔離した行の閲覧/削除（増加はアダプタのドリフト兆候）")
+    p = sub.add_parser("quarantine", help=t("パース不能で隔離した行の閲覧/削除（増加はアダプタのドリフト兆候）"))
     p.add_argument("action", nargs="?", choices=["list", "show", "clear"], default="list")
-    p.add_argument("--id", type=int, help="show対象のid")
+    p.add_argument("--id", type=int, help=t("show対象のid"))
     p.add_argument("--limit", type=int, default=20)
-    p.add_argument("--source", help="source_kindの部分一致で絞り込み")
-    p.add_argument("--yes", action="store_true", help="clearの確認を省略")
+    p.add_argument("--source", help=t("source_kindの部分一致で絞り込み"))
+    p.add_argument("--yes", action="store_true", help=t("clearの確認を省略"))
     p.set_defaults(fn=cmd_quarantine)
 
-    p = sub.add_parser("purge", help="全データ削除（DB/CAS/処理済みinbox）。設定とトークンは残す")
-    p.add_argument("--yes", action="store_true", help="確認なしで実行")
+    p = sub.add_parser("purge", help=t("全データ削除（DB/CAS/処理済みinbox）。設定とトークンは残す"))
+    p.add_argument("--yes", action="store_true", help=t("確認なしで実行"))
     p.set_defaults(fn=cmd_purge)
 
-    p = sub.add_parser("recall", help="「あの件どうなってた？」一発調査（検索+前後の顛末+添付根拠をMarkdown合成）")
+    p = sub.add_parser("recall", help=t("「あの件どうなってた？」一発調査（検索+前後の顛末+添付根拠をMarkdown合成）"))
     p.add_argument("query")
     p.add_argument("--budget", type=int, default=3500)
     p.add_argument("--hits", type=int, default=4)
-    p.add_argument("--source", help='面の絞り込み（部分一致: gemini / chatgpt / claude_web / claude_code / cursor…）')
-    p.add_argument("--copy", action="store_true", help="結果をクリップボードへ（WSLはclip.exe/UTF-16LE対応）")
+    p.add_argument("--source", help=t("面の絞り込み（部分一致: gemini / chatgpt / claude_web / claude_code / cursor…）"))
+    p.add_argument("--copy", action="store_true", help=t("結果をクリップボードへ（WSLはclip.exe/UTF-16LE対応）"))
     p.set_defaults(fn=cmd_recall)
 
-    p = sub.add_parser("show", help="1セッションを表示（latest可・--tail/--since-eventで途中から）")
-    p.add_argument("session", help="session_key、または latest / latest:<source_kind>")
-    p.add_argument("--tail", type=int, help="末尾N件だけ")
-    p.add_argument("--since-event", help="このevent_id（8桁短縮可）の次から")
-    p.add_argument("--since-ts", help="このISO時刻より後だけ")
-    p.add_argument("--json", action="store_true", help="CES JSONで出力")
+    p = sub.add_parser("show", help=t("1セッションを表示（latest可・--tail/--since-eventで途中から）"))
+    p.add_argument("session", help=t("session_key、または latest / latest:<source_kind>"))
+    p.add_argument("--tail", type=int, help=t("末尾N件だけ"))
+    p.add_argument("--since-event", help=t("このevent_id（8桁短縮可）の次から"))
+    p.add_argument("--since-ts", help=t("このISO時刻より後だけ"))
+    p.add_argument("--json", action="store_true", help=t("CES JSONで出力"))
     p.set_defaults(fn=cmd_show)
 
-    p = sub.add_parser("token", help="ブラウザ拡張用のinboxトークンを表示（無ければ生成）")
+    p = sub.add_parser("token", help=t("ブラウザ拡張用のinboxトークンを表示（無ければ生成）"))
     p.set_defaults(fn=lambda a: print(inbox_token()))
 
-    p = sub.add_parser("hook", help="Claude Code等のフック設定スニペットを表示")
+    p = sub.add_parser("hook", help=t("Claude Code等のフック設定スニペットを表示"))
     p.add_argument("--command", default="tamo ingest-hook")
     p.set_defaults(fn=cmd_hook)
 
-    p = sub.add_parser("ingest-hook", help="(フックから呼ばれる) stdinのJSONで対象transcriptを即時取込")
+    p = sub.add_parser("ingest-hook", help=t("(フックから呼ばれる) stdinのJSONで対象transcriptを即時取込"))
     p.set_defaults(fn=cmd_ingest_hook)
 
     args = ap.parse_args(argv)
     try:
         args.fn(args)
     except KeyboardInterrupt:  # serve/watch等のCtrl+C停止はトレースバックを出さず静かに終了
-        print("\n[tamo] 停止しました (Ctrl+C)", file=sys.stderr)
+        print(t("\n[tamo] 停止しました (Ctrl+C)"), file=sys.stderr)
         sys.exit(130)
     except BrokenPipeError:  # `tamo search ... | head` 等でパイプが先に閉じた場合は正常終了
         try:
@@ -945,8 +993,8 @@ def main(argv=None):
     except Exception as e:  # noqa: BLE001  ユーザーに生トレースバックを見せない（DB破損等も1行+対処で伝える）
         if os.environ.get("TAMO_DEBUG"):
             raise
-        print(f"[tamo] エラー: {e}\n  （詳細なトレースバックは TAMO_DEBUG=1 を付けて再実行すると出ます）",
-              file=sys.stderr)
+        print(t("[tamo] エラー: {err}\n  （詳細なトレースバックは TAMO_DEBUG=1 を付けて再実行すると出ます）",
+                err=e), file=sys.stderr)
         sys.exit(1)
 
 
