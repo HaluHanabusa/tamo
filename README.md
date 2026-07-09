@@ -1,104 +1,130 @@
-# tamo 🎣 — AIエージェント横断のコンテキスト収集器
+# tamo 🎣 — cross-agent context harvester
 
-Claude Code / Cursor / Codex CLI / aider / ブラウザのAIチャット（claude.ai・ChatGPT・Gemini…）に
-散らばる会話を、**1つのローカルDBへ自動で貯めて、横断検索して、次のエージェントへ引き継ぐ**ツールです。
+English | [日本語](README.ja.md)
 
-- **消える前に貯める** — 各ツールのログは無保証で、例えばClaude Codeは既定30日で自動削除されます。
-  tamoはソースより長く残す「受け皿」です（既定は無期限保存）
-- **どこからでも探せる** — 日本語部分一致の全文検索。添付（PDF / Word / Excel / テキスト）の中身までヒット
-- **そのまま引き継げる** — MCPで各エージェントから直接引ける / トークン予算内のMarkdownパックを貼れる
-- **完全ローカル・依存ゼロ** — 標準ライブラリのみ・LLM不使用の決定論処理。データはあなたのPCから出ません
+Your AI conversations are scattered across Claude Code, Cursor, Codex CLI, aider,
+and browser chats (claude.ai / ChatGPT / Gemini…). tamo **harvests them into one
+local database, makes them searchable, and hands them to whichever agent you use
+next.**
 
-## インストール 〜 最初の5分
+- **Save it before it's gone** — every tool deletes its own logs on its own terms
+  (Claude Code defaults to 30 days). tamo is the receptacle that outlives them
+  (default retention: forever)
+- **Search everything from one place** — full-text search with CJK substring
+  matching, including the *contents of attachments* (PDF / Word / Excel / text)
+- **Hand it off as-is** — serve history to any agent over MCP, or paste a
+  token-budgeted Markdown pack
+- **Fully local, zero dependencies** — stdlib-only, deterministic (no LLM in the
+  collection path). Your data never leaves your machine
+
+New here? Follow the **[15-minute tutorial](docs/TUTORIAL.md)** — it even ships a
+sandbox so you can try everything without touching real data.
+
+## Install — first 5 minutes
 
 ```bash
-pip install -e .            # 収集だけなら依存ゼロ。常駐サービス(MCP配布)まで使うなら pip install -e ".[mcp]"
-tamo probe --write          # 環境を自動走査して ~/.tamo/sources.toml を生成
-tamo collect                # 全ソースを増分収集（何度実行しても安全＝冪等）
-tamo stats                  # 何がどれだけ入ったか確認
-tamo search "スナップショット"   # 日本語部分一致で全文検索
+pip install -e .            # collection is dependency-free; add ".[mcp]" for the serving side
+tamo probe --write          # scan your machine → generate ~/.tamo/sources.toml
+tamo collect                # incremental, idempotent harvest of every source
+tamo stats                  # see what came in
+tamo search "snapshot"      # full-text search (CJK substring match works too)
 ```
 
-WSL2・ネイティブWindows・macOS・Linuxで動きます。データは `~/.tamo`（環境変数 `TAMO_HOME` で変更可）
-だけに書き、**収集元のファイルには一切書き込みません**。
+Runs on Windows (native or WSL2), macOS, and Linux. tamo writes only under
+`~/.tamo` (configurable via `TAMO_HOME`) and **never writes to the sources**.
 
-## ふだんの使い方
+## Everyday commands
 
-| やりたいこと | コマンド |
+| What you want | Command |
 |---|---|
-| 「あの件どうなってた？」を一発調査 | `tamo recall "甲板カバー 連動"`（`--copy` でクリップボードへ） |
-| 全文検索（添付の中身も対象） | `tamo search "語1 語2" --source gemini` |
-| 最新セッションの続きを見る | `tamo show latest --tail 5` |
-| 引き継ぎパックを作る | `tamo pack --budget 6000 --query "設計" --out pack.md` |
-| 履歴をgitにコミットできる形に | `tamo mirror --project myapp`（秘密情報は既定でマスク） |
-| 決定・制約をCLAUDE.mdへ還流 | `tamo rules --write CLAUDE.md` |
-| パースできなかった行の確認 | `tamo quarantine`（増えていたらソース側の形式変更の兆候） |
+| "What did we decide about X?" in one shot | `tamo recall "deck cover interlock"` (`--copy` → clipboard) |
+| Full-text search (incl. attachments) | `tamo search "term1 term2" --source gemini` |
+| Peek at the latest session | `tamo show latest --tail 5` |
+| Build a handoff pack | `tamo pack --budget 6000 --query "design" --out pack.md` |
+| Mirror history into your repo | `tamo mirror --project myapp` (secrets masked by default) |
+| Feed decisions/constraints into CLAUDE.md | `tamo rules --write CLAUDE.md` |
+| Inspect unparseable lines | `tamo quarantine` (growth = source format drift) |
 
-## 常駐させる — `tamo serve`（推奨）
+## Run it as a service — `tamo serve` (recommended)
 
-1コマンドで「定期収集 + ブラウザ投函口 + MCPサーバ + 日次prune」が全部立ちます:
+One command starts periodic collection + the browser inbox + an MCP server +
+daily prune:
 
 ```bash
 tamo serve
 ```
 
-エージェントへの登録は、起動バナーに出るコマンドをコピペするだけ:
+Registration is a copy-paste from the startup banner:
 
 ```bash
 claude mcp add --transport http tamo http://127.0.0.1:8788/mcp --header "X-Tamo-Token: $(tamo token)"
-# stdio派（Cursor / Codex CLI等も同じ。トークン不要）: claude mcp add tamo -- tamo mcp
+# stdio variant (same for Cursor / Codex CLI; no token needed): claude mcp add tamo -- tamo mcp
 ```
 
-登録後はエージェントに「あの件どうなってた？」と聞くだけでtamoが引かれます
-（`tamo hook` が出力するCLAUDE.mdスニペットを貼ると、より自発的に使うようになります）。
-常駐化はWSL2なら `systemd --user`、Windowsならタスクスケジューラに `tamo serve` を1行です。
+Then just ask your agent *"what did we decide about X?"* — it will call tamo's
+`recall` tool. Paste the snippet from `tamo hook` into `CLAUDE.md` to make agents
+reach for tamo proactively. For per-turn real-time ingestion use the hooks config
+that `tamo hook` prints; for CLIs without hooks, wrap them: `tamo run -- <cmd>`.
 
-- ターン毎のリアルタイム取込: `tamo hook`（Claude Code等のフック設定を表示）
-- フック機構が無いCLI: `tamo run -- <コマンド>`（終了時に自動で増分収集）
+To keep it running: `systemd --user` (Linux/WSL2) or one Task Scheduler entry
+(Windows).
 
-## ブラウザの会話も掬う — 同梱拡張「tamo scoop」
+## Scoop browser conversations — bundled extension "tamo scoop"
 
-1. `chrome://extensions` → デベロッパーモードON → 「パッケージ化されていない拡張機能を読み込む」→ `browser-extension/`
-2. `tamo serve` を起動した状態で拡張のpopupを一度開く → **自動ペアリング**完了
-3. claude.ai / ChatGPT / Gemini / その他サイトの会話ページで、画面右上の🎣をワンクリック
+1. `chrome://extensions` → Developer mode → *Load unpacked* → `browser-extension/`
+2. With `tamo serve` running, open the popup once — it pairs automatically
+3. Click the 🎣 button (top right) on claude.ai / ChatGPT / Gemini / any chat site
 
-過去の文脈を**ブラウザAIに渡す**こともできます（popupの「検索してコピー」→ 入力欄に貼るだけ）。
-詳細・トラブル対処は [browser-extension/README.md](browser-extension/README.md) へ。
+It works in reverse too: *search & copy* in the popup fetches past context to
+paste into the web chat. Details and troubleshooting:
+[browser-extension/README.md](browser-extension/README.md).
 
-## データの場所・保持・削除
+## Where your data lives — retention and deletion
 
-- 実体は `~/.tamo/tamo.db`（SQLite 1ファイル）と `~/.tamo/cas/`（添付）。バックアップはフォルダごとコピーでOK
-- 既定は**無期限保存**。`~/.tamo/settings.toml` の `[retention] days = 30` を設定すると常駐時に日次で自動prune
-- 手動削除は `tamo prune --days N`（確認プロンプト付き・`--dry-run` で事前確認）、全消去は `tamo purge --yes`
-- `tamo stats` がDBサイズ・最古イベント・隔離件数を常時可視化
+- Everything is in `~/.tamo/tamo.db` (one SQLite file) plus `~/.tamo/cas/`
+  (attachments). Backup = copy the folder
+- Default retention is **forever**; tamo warns once a day when total size passes
+  a threshold (`[retention] warn_db_mb`, default 2048). Set
+  `[retention] days = 90` in `~/.tamo/settings.toml` for auto-prune
+- Manual: `tamo prune --days N` (confirmation + `--dry-run`), full wipe:
+  `tamo purge --yes`
+- **Read the [retention risk notes](docs/ARCHITECTURE.md) before choosing** —
+  infinite retention of plaintext conversations is a real security/compliance
+  trade-off (recommended: `days = 90` on work machines, keep `TAMO_HOME` out of
+  cloud-synced folders, rely on full-disk encryption)
 
-## 対応ソース
+## Supported sources
 
-| ソース | 実体 |
+| Source | What tamo reads |
 |---|---|
-| Claude Code（CLI / VS Code / JetBrains / Claude Desktop） | `~/.claude/projects/**/*.jsonl` |
-| Cursor | `state.vscdb`（スナップショットコピーしてから読む） |
+| Claude Code (CLI / VS Code / JetBrains / Desktop) | `~/.claude/projects/**/*.jsonl` |
+| Cursor | `state.vscdb` (snapshot-copied before reading) |
 | Codex CLI | `~/.codex/sessions/**/*.jsonl` |
 | aider | `.aider.chat.history.md` |
-| ブラウザ（claude.ai / ChatGPT / Gemini / 任意サイト） | 同梱拡張 → HTTP inbox |
-| 任意のJSONL吐きエージェント | `generic_jsonl`（sources.tomlに数行書くだけ） |
+| Browser (claude.ai / ChatGPT / Gemini / any site) | bundled extension → HTTP inbox |
+| Any JSONL-writing agent | `generic_jsonl` (a few lines in sources.toml) |
 
-Windsurf / Cline / Copilot Chat 等は `tamo probe` が場所を報告します（実機の形式を見てから対応する方針）。
+Windsurf / Cline / Copilot Chat and others are *detected and reported* by
+`tamo probe` (adapters land once their real formats are fingerprinted).
 
-## 制限（正直な話）
+## Honest limitations
 
-- 各ツールのログ形式は非公開で予告なく変わります。tamoは「落ちない・失わない」を保証しますが
-  （壊れた行は原文ごと `tamo quarantine` へ隔離）、「常に完全にパースできる」は保証しません
-- 導入前にソース側の自動削除で消えた過去には遡れません — だからこそ早めに `tamo serve` を
-- DBは平文です。OSのディスク暗号化（BitLocker / FileVault）との併用を前提にしています
+- Log formats are undocumented and change without notice. tamo guarantees
+  "never crash, never lose" (broken lines are quarantined with their raw bytes —
+  see `tamo quarantine`), not "always parse everything"
+- It cannot recover history that the source deleted before you installed tamo —
+  run `tamo serve` early
+- The database is plaintext; full-disk encryption (BitLocker / FileVault) is
+  assumed
 
-## もっと詳しく
+## Learn more
 
-| ドキュメント | 内容 |
+| Document | Contents |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 設計原則・データモデル・最適化・還流・セキュリティ(NFR)の解説 |
-| [docs/TECH_STACK.md](docs/TECH_STACK.md) | 技術選定の理由と実装ファイルの対応表 |
-| [docs/VERIFICATION.md](docs/VERIFICATION.md) | 実機での動作確認手順 |
-| [browser-extension/README.md](browser-extension/README.md) | ブラウザ拡張の詳細（対応サイト・添付ポリシー・ドリフト時の挙動） |
+| [docs/TUTORIAL.md](docs/TUTORIAL.md) | hands-on walkthrough, zero to cross-agent recall in 15 min ([日本語](docs/TUTORIAL.ja.md)) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | design principles, data model, optimizer, retention risks (Japanese) |
+| [docs/TECH_STACK.md](docs/TECH_STACK.md) | why each technology was chosen, file-by-file map (Japanese) |
+| [docs/VERIFICATION.md](docs/VERIFICATION.md) | on-machine verification steps (Japanese) |
+| [browser-extension/README.md](browser-extension/README.md) | extension details (Japanese) |
 
 MIT License
