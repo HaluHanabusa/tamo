@@ -313,8 +313,13 @@ background.js(Service Worker) ──POST──> http://127.0.0.1:8787/inbox
 
 ## 13. テスト戦略と実測値
 
-生成器方式のfixture（`tests/make_fixtures.py`=5ソース模擬環境、`tests/make_attachment_fixtures.py`=合成PDF/docx/xlsx）
-+ コンテナ内E2E。ライブサイトに触れない拡張は**契約テスト**
+**pytest自動テスト**（`tests/test_*.py`, 55+件）+ 生成器方式のfixture（`tests/make_fixtures.py`=
+5ソース模擬環境、`tests/make_attachment_fixtures.py`=合成PDF/docx/xlsx）。
+CI（`.github/workflows/ci.yml`）は ubuntu/windows × Python 3.11/3.13 のマトリクスで
+pytestを回し、拡張JSは `node --check` で構文検証。カバレッジの柱:
+冪等性 / encoding耐性(cp932再現) / ロック回収 / CAS自己修復 / inboxのcommit後move /
+quarantine運用 / redactパターン / HTTP認可 / MCPツール+認証ゲート(mcp導入時)。
+ライブサイトに触れない拡張は**契約テスト**
 （lib.jsと同一ロジックでpayload生成→inbox→collect→検索）で担保。
 
 | 検証 | 結果 |

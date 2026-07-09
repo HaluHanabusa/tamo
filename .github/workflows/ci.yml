@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install (mcp extras込み)
+        run: pip install -e ".[mcp]" pytest
+      - name: pytest
+        run: pytest -q
+
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: JS構文チェック
+        run: |
+          set -e
+          for f in $(find browser-extension -name "*.js"); do node --check "$f"; done
+      - name: manifest妥当性
+        run: node -e "JSON.parse(require('fs').readFileSync('browser-extension/manifest.json','utf8')); console.log('manifest OK')"
