@@ -1,10 +1,33 @@
 [project]
 name = "tamo"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic cross-agent context harvester (Claude Code / Cursor / Codex CLI / browser) with CAS blob store and MCP serving"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [{ name = "HaluHanabusa", email = "halu.hanabusa@gmail.com" }]
+keywords = ["ai-agents", "context", "mcp", "claude-code", "cursor", "sqlite", "fts5"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: Utilities",
+]
 dependencies = []  # 収集系は標準ライブラリのみ
+
+[project.urls]
+Homepage = "https://github.com/HaluHanabusa/tamo"
+Repository = "https://github.com/HaluHanabusa/tamo"
+Issues = "https://github.com/HaluHanabusa/tamo/issues"
+Changelog = "https://github.com/HaluHanabusa/tamo/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 mcp = ["mcp[cli]>=1.2"]
@@ -20,3 +43,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["tamo*"]
+
+[tool.setuptools.package-data]
+tamo = ["py.typed"]
