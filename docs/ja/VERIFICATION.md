@@ -1,6 +1,6 @@
 # tamo 実機確認手順書
 
-[English](VERIFICATION.md) | 日本語
+[English](../VERIFICATION.md) | 日本語
 
 対象環境: **Windows 11 + WSL2 (Ubuntu)** / CLI: **Claude Code** / ブラウザ: **claude.ai・Gemini・ChatGPT**（Chrome または Edge）
 所要時間目安: 40〜60分（Phase 1〜4が本体。5以降は任意）

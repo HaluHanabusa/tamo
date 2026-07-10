@@ -1,6 +1,6 @@
 # tamo scoop — ブラウザ拡張（MV3）
 
-[English](README.md) | 日本語
+[English](../../browser-extension/README.md) | 日本語
 
 AIチャットサイトの会話を **tamo の inbox（localhost）へ投函**する拡張。
 データはlocalhost以外へ一切送りません。

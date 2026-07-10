@@ -1,6 +1,6 @@
 # tamo tech stack
 
-English | [日本語](TECH_STACK.ja.md)
+English | [日本語](ja/TECH_STACK.md)
 
 > The technologies tamo uses and *why each one was chosen*, organized by layer so
 > it is easy to check later. **The relevant file name is always given**, so when

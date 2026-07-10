@@ -1,13 +1,13 @@
 # tamo 技術スタック解説書
 
-[English](TECH_STACK.md) | 日本語
+[English](../TECH_STACK.md) | 日本語
 
 > tamoで使っている技術と「なぜそれを選んだか」を、後から確認しやすいように
 > レイヤーごとにまとめたもの。**該当ファイル名を常に併記**しているので、
 > 挙動を確かめたくなったらそのファイルを開けば実装に辿り着けます。
 >
-> **読み分け**: 使い方は [README](../README.ja.md)、設計思想・データモデル・NFRは
-> [ARCHITECTURE.md](ARCHITECTURE.ja.md)、実機確認手順は [VERIFICATION.md](VERIFICATION.ja.md)。
+> **読み分け**: 使い方は [README](README.md)、設計思想・データモデル・NFRは
+> [ARCHITECTURE.md](ARCHITECTURE.md)、実機確認手順は [VERIFICATION.md](VERIFICATION.md)。
 
 ## 目次
 
@@ -42,7 +42,7 @@ aider history.md ──────────────┤  cas.py      blob
                                   optimize.py 読出時 P1〜P4
 ```
 
-4つの設計原則（[ARCHITECTURE.md](ARCHITECTURE.ja.md) と同じ。実装上の帰結を添える）:
+4つの設計原則（[ARCHITECTURE.md](ARCHITECTURE.md) と同じ。実装上の帰結を添える）:
 
 | 原則 | 実装上の帰結 |
 |---|---|

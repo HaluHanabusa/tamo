@@ -1,6 +1,6 @@
 # tamo tutorial — from zero to cross-agent recall in 15 minutes
 
-[日本語版](TUTORIAL.ja.md)
+[日本語版](ja/TUTORIAL.md)
 
 This walkthrough takes you from installation to the point where any of your AI
 agents can answer *"what did we decide about X?"* from conversations that

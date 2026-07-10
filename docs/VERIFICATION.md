@@ -1,6 +1,6 @@
 # tamo on-machine verification guide
 
-English | [日本語](VERIFICATION.ja.md)
+English | [日本語](ja/VERIFICATION.md)
 
 Target environment: **Windows 11 + WSL2 (Ubuntu)** / CLI: **Claude Code** / Browser: **claude.ai, Gemini, ChatGPT** (Chrome or Edge)
 Estimated time: 40–60 minutes (Phases 1–4 are the core; 5 onward is optional)

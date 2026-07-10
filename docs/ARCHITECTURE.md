@@ -1,6 +1,6 @@
 # tamo architecture
 
-English | [日本語](ARCHITECTURE.ja.md)
+English | [日本語](ja/ARCHITECTURE.md)
 
 > **Which doc to read**: for usage, see the [README](../README.md); for why each
 > technology was chosen and the file-by-file map, see [TECH_STACK.md](TECH_STACK.md);

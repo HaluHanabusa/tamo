@@ -1,9 +1,9 @@
 # tamo アーキテクチャ解説
 
-[English](ARCHITECTURE.md) | 日本語
+[English](../ARCHITECTURE.md) | 日本語
 
-> **読み分け**: 使い方は [README](../README.ja.md)、技術選定の理由と実装ファイル対応は
-> [TECH_STACK.md](TECH_STACK.ja.md)、実機確認手順は [VERIFICATION.md](VERIFICATION.ja.md)。
+> **読み分け**: 使い方は [README](README.md)、技術選定の理由と実装ファイル対応は
+> [TECH_STACK.md](TECH_STACK.md)、実機確認手順は [VERIFICATION.md](VERIFICATION.md)。
 > この文書は「tamoがどういう考え方で作られているか」— 設計原則・データモデル・
 > 最適化・還流・非機能要件 — を説明します。
 

@@ -45,7 +45,10 @@
   （設計は docs/ARCHITECTURE.md §14）。辞書の網羅とplaceholder一致はASTスキャンのテストで強制
 - MCPツール説明をLLM向けの固定英語に変更
 - **深層ドキュメントを英訳**: ARCHITECTURE / TECH_STACK / VERIFICATION / 拡張README を
-  英語主・`*.ja.md` 併設に（README/TUTORIALと同じパターン）
+  英語主に（README/TUTORIALも含め英語ファースト化）
+- **日本語ドキュメントを `docs/ja/` に集約** — `*.ja.md` を英語版と同じフォルダに
+  並べる方式は一覧が2倍に膨れて分かりにくいため、ディレクトリで言語分離。
+  相対リンクの実在・自己参照はテストで機械検証（tests/test_docs_links.py）
 
 ### 国際化・保存期間（同版に追補）
 - README を英語化（正）し `README.ja.md` を併設。15分チュートリアル

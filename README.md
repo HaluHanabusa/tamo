@@ -1,6 +1,6 @@
 # tamo 🎣 — cross-agent context harvester
 
-English | [日本語](README.ja.md)
+English | [日本語](docs/ja/README.md)
 
 Your AI conversations are scattered across Claude Code, Cursor, Codex CLI, aider,
 and browser chats (claude.ai / ChatGPT / Gemini…). tamo **harvests them into one
@@ -121,10 +121,10 @@ Windsurf / Cline / Copilot Chat and others are *detected and reported* by
 
 | Document | Contents |
 |---|---|
-| [docs/TUTORIAL.md](docs/TUTORIAL.md) | hands-on walkthrough, zero to cross-agent recall in 15 min ([日本語](docs/TUTORIAL.ja.md)) |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | design principles, data model, optimizer, retention risks ([日本語](docs/ARCHITECTURE.ja.md)) |
-| [docs/TECH_STACK.md](docs/TECH_STACK.md) | why each technology was chosen, file-by-file map ([日本語](docs/TECH_STACK.ja.md)) |
-| [docs/VERIFICATION.md](docs/VERIFICATION.md) | on-machine verification steps ([日本語](docs/VERIFICATION.ja.md)) |
-| [browser-extension/README.md](browser-extension/README.md) | extension details ([日本語](browser-extension/README.ja.md)) |
+| [docs/TUTORIAL.md](docs/TUTORIAL.md) | hands-on walkthrough, zero to cross-agent recall in 15 min ([日本語](docs/ja/TUTORIAL.md)) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | design principles, data model, optimizer, retention risks ([日本語](docs/ja/ARCHITECTURE.md)) |
+| [docs/TECH_STACK.md](docs/TECH_STACK.md) | why each technology was chosen, file-by-file map ([日本語](docs/ja/TECH_STACK.md)) |
+| [docs/VERIFICATION.md](docs/VERIFICATION.md) | on-machine verification steps ([日本語](docs/ja/VERIFICATION.md)) |
+| [browser-extension/README.md](browser-extension/README.md) | extension details ([日本語](docs/ja/browser-extension.md)) |
 
 MIT License

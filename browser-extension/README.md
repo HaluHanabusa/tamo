@@ -1,6 +1,6 @@
 # tamo scoop — browser extension (MV3)
 
-English | [日本語](README.ja.md)
+English | [日本語](../docs/ja/browser-extension.md)
 
 An extension that **posts conversations from AI chat sites into tamo's inbox
 (localhost)**. Data is never sent anywhere except localhost.
